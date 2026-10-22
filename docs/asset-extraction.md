@@ -52,7 +52,8 @@ GDI layouts, cooked sectors, CHD decompression, interleaved or multi-extent file
 
 **The disc extractor recovers original containers.** The texture conversion below
 now exports the four TEXDC banks and the model conversion exports POLDC/BINC
-geometry; sprite banks, motion and audio remain undecoded.
+geometry, and the audio conversion exports ADX and DTPK sounds; sprite banks and
+motion remain undecoded.
 The decomp's `tools/model_map.py` documents model/texture mappings (lines 6–50 and
 83–93). Do not apply region-specific executable addresses to this USA build
 without validating them. No upstream source or game data was copied into the
@@ -118,6 +119,46 @@ Eight BINC1 vertices have NaN U values; these are replaced with 0 and counted in
 image URI resolved, and reported 0 errors and 0 warnings. Not yet exported: character
 skeleton assembly, traffic car part sets, motion, and placing POLDC1–3 props.
 
+## Audio conversion (WAV)
+
+```sh
+python3 tools/extract_audio.py local-assets/disc --output local-assets/audio
+```
+
+This writes 16-bit PCM WAVs to `<SOURCE>/<id>.wav`, plus `manifest.json` (source,
+stream and WAV hashes, offsets, loop points, clip counts) and an `index.html`
+player page. The run takes about 10 seconds.
+
+* **ADX** (`SONG01.AFS` music, `VOICE01.AFS` speech): type-3 4-bit CRI ADX. The
+  prediction coefficients come from the header's high-pass cutoff. The block scale
+  is `(word & 0x1FFF) + 1`, the same `+ 1` as the game's own decoder (decomp
+  `src/gen_hc.c`, `ADX_DecodeSteFloat`). The game decodes in floating point;
+  this tool uses the standard integer method. Header loop points (version 3) are
+  saved in the manifest.
+* **DTPK** (`SNDDC*.BIN` sound effects): each 16-byte entry in the sample table
+  holds AICA channel registers. These are the start address (23 bits), PCMS
+  (0 = PCM16, 1 = PCM8, 2 = ADPCM), the loop flag, LSA/LEA and the byte size.
+  The decomp's `dtpk_sounds` uses `word >> 24` as the format. That reads PCM8
+  entries as PCM16 and skips entries above 16 MB. Proof that the register
+  reading is right: the entries run back to back, and every LEA is within 3
+  samples of the length decoded in that format. ADPCM is Yamaha AICA (low nibble
+  first, step 127). A pack does not store a sample rate (the program's pitch sets
+  it), so each WAV uses a nominal 22,050 Hz.
+
+Verified October 22, 2026 on the USA files: **798 sounds**. They are SONG01 9
+stereo 44.1 kHz tracks (621.8 s; tracks 0 and 8 loop), VOICE01 699 mono 22.05 kHz
+clips (1,034.7 s), and 90 DTPK samples (SNDDC0 41, SNDDC1 20, SNDDC2 2, SNDDC3 3,
+SNDDC5 4, SNDDC6 7, SNDDC7 8, SNDDC8 5; 38 ADPCM, 38 PCM16, 14 PCM8). Two
+independent checks against ffmpeg 8 passed:
+
+* All 708 ADX streams decoded with `scale_bias=0` match ffmpeg's `adx` decoder
+  sample-for-sample. ffmpeg leaves out the game's `+ 1` and pads the last block.
+* All 38 ADPCM samples match ffmpeg's `adpcm_aica` decoder sample-for-sample.
+
+All 798 WAVs open in `ffprobe` without errors. Clamping to 16 bits affects 718
+music samples and 215 voice samples. Not yet done: DTPK programs/sequences (pitch,
+envelopes and which sample each sound effect plays).
+
 ## Tests and web build
 
 ```sh
@@ -125,7 +166,7 @@ PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -v
 npm run build
 ```
 
-The 35 synthetic tests include 11 disc-extractor tests for nested directories,
+The 45 synthetic tests include 11 disc-extractor tests for nested directories,
 sector padding, partial final sectors, empty files, manifest hashes, no overwrite,
 invalid descriptors, endian disagreement, out-of-track extents, cycles, unsafe
 names, duplicates, multi-extent rejection, malformed records, truncated tracks,
@@ -135,5 +176,8 @@ ambiguous or malformed tables, payload sizes, PNG CRCs/scanlines, manifest/galle
 no overwrite and cleanup. The 9 model tests cover strip winding, triangle lists
 with references, vertex-colour records, repaired attributes, malformed models,
 record chaining, GLB chunks/materials/samplers, manifest output, no overwrite and
-cleanup. No disc image is required.
+cleanup. The 10 audio tests cover ADX coefficients, scale bias, prediction,
+stereo interleave, clamping, loop points, malformed streams, AFS tables, DTPK
+register decoding and validation, PCM8/PCM16/AICA ADPCM, WAV output, no overwrite
+and cleanup. No disc image is required.
 The Python tests are invoked separately; `npm test` does not run them.
