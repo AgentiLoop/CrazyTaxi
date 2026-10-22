@@ -357,8 +357,36 @@ in the USA files; no regional address is reused:
 * **Colours.** The 32 RGB triples after the last record (`0x0C0A22F8`, the
   literal in the USA `putCarModel`), and per type a 32-entry index list at
   `+0x9C` (PcarEvInit picks `random & 31`). E_Taxi, IceBox, Bus, the convoy and
-  the rail vehicles have none. The manifest lists them; paint is **not** applied,
-  because the rule for which strips take the colour is not verified.
+  the rail vehicles have none.
+* **Paint (USA disassembly).** `putCarModel` reads the car's colour as a halfword
+  at `+0x7C` of the `_car` when the word there is not negative, and calls
+  `SetFadeColorBaseMulti(r, g, b)` (`0x0C02FF6A`) with that colour-table entry.
+  That multiplies the fade base (`0x0C0E93AC`, 1, 1, 1 in the file) and stores it
+  with `nlObjPutSetFadeColorBase` (`0x0C079180`, into `0x0C148678`). Only the body
+  model (`+0x00`, or `+0x04` far away) is drawn before `ResetFadeColor`
+  (`0x0C02FFC2`); the models drawn after it (the `+0x10` extra among them) are not
+  tinted. The library record drawer (`0x0C080E20`, the decomp's EU `FUN_0c081660`)
+  copies the fade base and, for a record whose PCW colour type is 2 (bit `0x20`
+  set, `0x10` clear: intensity mode 1), multiplies the header's face colour R, G, B
+  by it before sending it to the PowerVR. Colour type 3 records (intensity mode 2)
+  send no face colour, so the hardware uses the last mode 1 colour. In the eight
+  painted bodies (near and far) every record but five is textured with TSP shading
+  2 (decal alpha), where the PowerVR shows texture RGB × texture alpha + face RGB ×
+  (1 − texture alpha), with the face alpha as alpha; the five are a plain decal
+  record in each P_Sedan_B/C body and one modulate record in P_Picup's far body.
+  The body textures carry graded alpha (ARGB4444), so the paint shows through where
+  the texture is transparent.
+* **Paint in the GLBs.** glTF has no decal-alpha mode, so every decal-alpha texture
+  is baked with that rule and embedded as a PNG: on non-body models and on types
+  without a colour list with the record's own face colour (E_Taxi's face colour is
+  yellow), on painted bodies with face colour × paint. A body's default material
+  uses the first entry of the type's list (`random & 31` = 0); every distinct list
+  entry is a `KHR_materials_variants` variant named `paint_NN` (NN = colour-table
+  index). The manifest's `paint` entry gives the default, the variants and counts.
+  USA: 12 types have decal-alpha records (E_Taxi, types 1–8 and the three
+  POLDC2 `P_Cable`s); types 1–8 are painted (6, 8 or 16 colours each, 432 baked
+  images); no cab uses decal alpha. A P_Picup body record has a face colour of
+  (1, 1, 0.994), so its decal materials are kept apart by face colour.
 * **Placement (USA `putCarModel`, about `0x0C0434E0`).** Scene "near": body
   `+0x00`, shadow `+0x08`, extra `+0x10`, and for axle k the wheel model
   (`+0x58/+0x60/+0x68`) at the axle centre (`+0x70/+0x7C/+0x88`) plus the second
@@ -384,9 +412,12 @@ Checks:
   than to carTbl.
 * Axles, `+0x94` (2000 for cars, 8000 for the bus) and `+0x98` (28, 40) match the
   decomp's figures. P_Mercury's body is cab set 3's body, as the decomp says.
-* All 27 GLBs pass the Khronos `gltf-validator` with 0 errors and 0 warnings, and
-  every texture URI resolves. Two runs give identical output. 6,843 traffic and
-  14,356 cab triangles; no model has been visually inspected.
+* All 27 GLBs pass the Khronos `gltf-validator` (which knows
+  `KHR_materials_variants`) with 0 errors, 0 warnings and no unused objects, and
+  every texture URI resolves. Every baked image was decoded again and matches the
+  decal-alpha rule applied to its TEXDC PNG pixel for pixel. Two runs give identical
+  output. 6,843 traffic and 14,356 cab triangles; no model has been visually
+  inspected.
 
 Assumptions and limits:
 
@@ -397,6 +428,11 @@ Assumptions and limits:
   models sit and which flags pick them, not confirmed in play.
 * The default cab set's wheel models (one thin disc twice, one full axle twice) are
   placed as the game would place them, so its axle models overlap.
+* Paint is the static colour only: lighting (the records' intensity), the offset
+  colour and runtime fade changes are not applied. Which colour a given car gets
+  is random in play.
+* The single-model GLBs from `extract_models.py` still show decal-alpha textures
+  unbaked (plain texture); only the vehicle GLBs bake them.
 
 ## Set objects (glTF 2.0)
 
@@ -844,7 +880,7 @@ PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -v
 npm run build
 ```
 
-The 129 synthetic tests include 11 disc-extractor tests for nested directories,
+The 135 synthetic tests include 11 disc-extractor tests for nested directories,
 sector padding, partial final sectors, empty files, manifest hashes, no overwrite,
 invalid descriptors, endian disagreement, out-of-track extents, cycles, unsafe
 names, duplicates, multi-extent rejection, malformed records, truncated tracks,
@@ -865,10 +901,12 @@ run a hand-assembled draw routine symbolically (pool loads, delay slots, `cmp/eq
 branches on the character, a `braf` jump table, unresolved-branch rejection),
 identify its primitives, build the bone tree, reject unbalanced matrix stacks, and
 cover base/table/motion/select-table discovery, quaternions, world positions,
-looping animation output and no overwrite. The 6 vehicle tests cover traffic-table
+looping animation output and no overwrite. The 9 vehicle tests cover traffic-table
 runs, names, colour tables, model-file ownership (including ambiguity), putCarModel
-wheel/mirror/level rules, cab-table discovery and set lengths, and multi-scene GLBs
-with shared meshes. The 6 set-object tests cover record chains and their
+wheel/mirror/level rules, cab-table discovery and set lengths, multi-scene GLBs
+with shared meshes, decal-alpha baking and PNG reading, intensity mode 2 records
+taking the last mode 1 face colour, and paint variants on body meshes only with
+unused materials pruned. The 6 set-object tests cover record chains and their
 rejection (count mismatch, pointers past the loaded bytes, empty files), the
 load-address search, the kind table and spheres, the exact-length model table and
 array bounds, and the Y-then-X rotation against the SH-4 matrices. The 10
