@@ -58,7 +58,8 @@ exports their V-format motions; the vehicle conversion assembles traffic and cab
 the set-object conversion places the OBJDC street props; the collision conversion
 exports the COLDC ground and wall grids; the course-line conversion exports the
 SPLDC traffic lanes with their links; the destination-picture conversion decodes
-the LANDDC pictures with their names.
+the LANDDC pictures with their names; the Fcv conversion exports the key-curve
+motions at the start of MOTDC.
 The decomp's `tools/model_map.py` documents model/texture mappings (lines 6–50 and
 83–93). Do not apply region-specific executable addresses to this USA build
 without validating them. No upstream source or game data was copied into the
@@ -295,8 +296,8 @@ How the animations are built, and what is assumed:
 
 Not exported:
 
-* The first `0x17CAB4` bytes of MOTDC: the cab drivers' key-curve (Fcv) motions,
-  played with two-bone IK.
+* The start of MOTDC: the key-curve (Fcv) motions, played with two-bone IK.
+  `tools/extract_fcv_motions.py` converts them (see below).
 * The low-detail 8-part people table at `0x0C1324D4`.
 
 ## Vehicles (glTF 2.0)
@@ -626,6 +627,88 @@ Assumptions and limits:
   gives LANDDC1 34 and 36–39 names from the Original part of the list.
 * The AFS entry number is taken to be the picture index passed to the loader.
 
+## Key-curve (Fcv) motions (glTF 2.0)
+
+```sh
+python3 tools/extract_fcv_motions.py local-assets/disc --output local-assets/fcv_motions
+```
+
+Runs in about 12 seconds. Writes `fcv_motions.glb` (one animation per motion),
+`manifest.json` and `index.html`. The animations drive the same nodes as the
+characters (`bone_0`–`bone_15`, same parents and offsets; the manifest's skeleton
+equals the characters manifest's), so any clip plays on any `char_XX.glb`.
+
+MOTDC starts with **278 Fcv motions** in bytes `0`–`0x174738`. The first V-format
+motion's data starts right after them (its header is at `0x17CAB4`). Each motion
+is a header `{frames, 17 word offsets}` followed by 17 curves. Each curve is three
+channels of `{count, count × {int frame, value, in tangent, out tangent}}`. A
+header is accepted only when its curves sit back to back right after it. In the
+data, every channel has at least 2 keys and covers frames 0 to `frames − 1`. 577
+of the 14,178 channels have keys out of frame order, and some start at a negative
+frame.
+
+Found in the USA files, with no regional address reused:
+
+* **Motion table** `0x0C0CFE1C`: the longest run of executable words pointing at
+  Fcv headers, using the MOTDC base `0x0C880000` from the V motions. It lists all
+  278 motions in file order. The manifest also lists each motion's other
+  references in the executable.
+* **Solver lengths** `0x0C0D4370`: four floats followed by their squares. Arm:
+  2.50798 and 2.51448; leg: 4.05096 and 4.24663.
+* **Bind offsets** `0x0C0D4290`: the 13-vector table whose segment vectors match
+  those lengths (head 4.4849, shoulders, hips and segments).
+
+How a frame is built, ported from the USA code (`FcvStoreBuffer` and its curve
+functions, `FcvPlayBuffer`, `fcvSolveIK` at `0x0C066DE8`, `fcvRotate`):
+
+* **Curves.** The search takes the first key pair with `key[k].frame ≤ f <
+  key[k+1].frame` and blends it by Hermite. The tangents are not scaled by the
+  key gap, and `t` is clamped to 0–1. Angles are truncated to integers. If `f`
+  equals `key[k+1].frame`, that key's value is used. A frame that no pair covers
+  leaves the old value in place; this happens 0 times in the USA data. Frame `f`
+  plays as `f mod (frames − 1)`. Each animation holds frames 0 to `frames − 2`,
+  then frame 0 again.
+* **Pose buffer.** The buffer holds the root position; four targets (left hand,
+  right hand, left foot, right foot) in the character's own axes; and twelve
+  `Rz·Ry·Rx` angle triples (`0x10000` = one turn).
+* **Bones.** The root uses its angles, then a quarter turn about y. The torso
+  uses its angles. The head turns a quarter turn back about z first, which puts
+  its 4.4849 offset on the V tree's +x. Each arm or leg then takes:
+  * its shoulder or hip angles;
+  * the solver: aim +x at the target with the shortest rotation, twist about x
+    by `atan2(oldY·newZ, oldZ·newZ)` back, then bend both segments about z by
+    the law of cosines (a cosine outside −1…1 gives 0, which leaves the limb
+    straight);
+  * the hand or foot angles.
+
+Checks (verified October 22, 2026 on the USA files):
+
+* **Reach.** 102,527 limb poses are within reach, and every one ends within
+  0.00077 of its target. 985 (under 1%, in 92 motions) are out of reach and
+  point straight at the target.
+* **Knee direction.** 51,330 of 51,756 knee poses (99.2%) bend toward the
+  toes (the foot's +y, the direction given for the foot in the decomp's
+  skeleton table). This supports the twist and bend signs.
+* **Plausible poses.** In motion 4 the root is at y 5.6, the hands are at
+  y 8.3–8.8, 2–3 units forward (−z), and the feet are 8.5 forward at y 3.2:
+  a seated driver.
+* **Validator and repeat runs.** The GLB passes `gltf-validator` with 0 errors,
+  0 warnings and 278 animations; the only infos are empty leaf bone nodes. Two
+  runs give identical output.
+
+Assumptions and limits:
+
+* Keys are spaced at a nominal 30 fps; the drivers' frame step was not traced.
+* The math is done in float64 with the exact library formulas, but not with the
+  SH-4's `fsca` table or its arc tangent and arc sine approximations, so angles
+  can differ from the console by small amounts.
+* Which motion each driver, cab state or customer plays isn't named. The
+  manifest lists the executable references for each motion; some sit in runs of 8
+  consecutive words (for example at `0x0C0D3B54`), whose meaning wasn't traced.
+* `FcvPlayBuffer`'s extra models (hats and the like) aren't drawn here. The
+  characters tool already places the V draw routine's extras.
+* No animation has been viewed.
+
 ## Tests and web build
 
 ```sh
@@ -633,7 +716,7 @@ PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -v
 npm run build
 ```
 
-The 100 synthetic tests include 11 disc-extractor tests for nested directories,
+The 114 synthetic tests include 11 disc-extractor tests for nested directories,
 sector padding, partial final sectors, empty files, manifest hashes, no overwrite,
 invalid descriptors, endian disagreement, out-of-track extents, cycles, unsafe
 names, duplicates, multi-extent rejection, malformed records, truncated tracks,
@@ -672,5 +755,10 @@ masked-index code, link statistics and a full extraction with shared points,
 unreferenced bytes and per-game scenes. The 5 destination-picture tests cover the
 streamed sprite record and its literal-pool check, the name list and city bases,
 the white frame and a full extraction with empty, unframed and shared entries.
+The 14 Fcv motion tests cover Hermite basis and tangents, signed truncated
+angles, the game's key search (out-of-order keys, uncovered frames keeping the
+old value), back-to-back motion discovery and gap rejection, the motion table's
+order check, solver lengths and bind table, the bone tree, rotation order and the
+head quarter turn, IK reach, out-of-reach limbs, looping and a full extraction.
 No disc image is required.
 The Python tests are invoked separately; `npm test` does not run them.
