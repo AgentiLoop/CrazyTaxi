@@ -6,6 +6,7 @@ import tempfile
 import unittest
 
 from tools import extract_models as em
+from tools.extract_textures import png_bytes
 
 
 def fl(*values):
@@ -186,6 +187,36 @@ class ModelTests(unittest.TestCase):
             self.assertEqual(written["files"][4]["models"][1]["entry"], 1)
             with self.assertRaises(ValueError):
                 em.extract(disc, textures, root / "models")
+
+    def test_decal_alpha_records_baked_and_embedded(self):
+        decal = model([record([strip(0x12, 4, [vertex(0, 0, 0), vertex(1, 0, 0), vertex(0, 1, 0), vertex(1, 1, 0)])],
+                              tsp=0x2009A49B, face=(1.0, 1.0, 0.5, 0.0))])  # shading 2, ARGB yellow-orange
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            disc, textures = self.fixture(root)
+            (textures / "TEXDC1").mkdir()
+            (textures / "TEXDC1" / "0000.png").write_bytes(png_bytes(2, 1, bytes([10, 20, 30, 0, 200, 100, 50, 255])))
+            (textures / "TEXDC2").mkdir()
+            (textures / "TEXDC2" / "0000.png").write_bytes(png_bytes(1, 1, bytes([0, 0, 0, 0])))
+            (disc / "POLDC1.BIN").write_bytes(b"\0" * 32 + decal + b"\0" * 16)
+            (disc / "BINC2.AFS").write_bytes(afs([decal, quad_model()]))
+            manifest = em.extract(disc, textures, root / "models")
+            single = manifest["files"][1]["models"][0]
+            self.assertEqual((single["decal_records"], single["baked_images"]), (1, 1))
+            self.assertNotIn("decal_records", manifest["files"][0]["models"][0])
+            city = manifest["files"][5]
+            self.assertEqual((city["models"][0]["decal_records"], city["baked_images"]), (1, 1))
+            self.assertNotIn("decal_records", city["models"][1])
+            blob = (root / "models" / single["glb"]).read_bytes()
+            size = struct.unpack_from("<I", blob, 12)[0]
+            doc, binary = json.loads(blob[20:20 + size]), blob[28 + size:]
+            self.assertEqual(len(doc["materials"]), 1)  # unbaked material pruned
+            self.assertEqual(doc["materials"][0]["extras"]["decal_alpha_colour"], [1.0, 0.5, 0.0, 1.0])
+            self.assertNotIn("uri", doc["images"][0])
+            view = doc["bufferViews"][doc["images"][0]["bufferView"]]
+            path = root / "baked.png"
+            path.write_bytes(binary[view["byteOffset"]:view["byteOffset"] + view["byteLength"]])
+            self.assertEqual(em.read_png(path), (2, 1, bytes([255, 128, 0, 255, 200, 100, 50, 255])))
 
     def test_bad_archive_cleans_up(self):
         with tempfile.TemporaryDirectory() as tmp:

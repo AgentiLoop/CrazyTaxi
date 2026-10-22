@@ -7,6 +7,7 @@ import unittest
 import zlib
 
 from tools import extract_vehicles as ev
+from tools import extract_models as em
 from tools.extract_models import parse_model
 from tools.extract_textures import png_bytes
 from tests.test_extract_models import model, quad_model, record, strip, vertex
@@ -139,17 +140,17 @@ class ExtractVehiclesTest(unittest.TestCase):
 
     def test_decal_alpha_and_png_round_trip(self):
         rgba = bytes([10, 20, 30, 0, 200, 100, 50, 255, 0, 0, 0, 51])
-        self.assertEqual(ev.decal_alpha(rgba, (1.0, 0.5, 0.0, 1.0)),
+        self.assertEqual(em.decal_alpha(rgba, (1.0, 0.5, 0.0, 1.0)),
                          bytes([255, 128, 0, 255, 200, 100, 50, 255, 204, 102, 0, 255]))
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder) / "t.png"
             path.write_bytes(png_bytes(3, 1, rgba))
-            self.assertEqual(ev.read_png(path), (3, 1, rgba))
+            self.assertEqual(em.read_png(path), (3, 1, rgba))
             raw = zlib.compress(b"\x01" + rgba)
             path.write_bytes(b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", 3, 1, 8, 6, 0, 0, 0))
                              + chunk(b"IDAT", raw) + chunk(b"IEND", b""))
             with self.assertRaises(ValueError):
-                ev.read_png(path)
+                em.read_png(path)
 
     def test_mark_decals_inherits_last_intensity_1_face(self):
         quad = strip(0x12, 4, [vertex(0, 0, 0), vertex(1, 0, 0), vertex(0, 1, 0), vertex(1, 1, 0)])
@@ -157,13 +158,13 @@ class ExtractVehiclesTest(unittest.TestCase):
                       record([quad], pcw=PCW_INTENSITY_2, tsp=TSP_DECAL, face=(1.0, 0.5, 0.5, 0.5)),
                       record([quad])])
         parsed = parse_model(data, 0)
-        self.assertEqual(ev.mark_decals(parsed, [dict(png="t.png")]), 2)
+        self.assertEqual(em.mark_decals(parsed, [dict(png="t.png")]), 2)
         self.assertEqual([r["decal_face"] for r in parsed["records"]],
                          [(1.0, 1.0, 1.0, 0.0), (1.0, 1.0, 1.0, 0.0), None])
         with self.assertRaises(ValueError):
-            ev.mark_decals(parse_model(model([record([quad], pcw=PCW_INTENSITY_2, tsp=TSP_DECAL)]), 0),
+            em.mark_decals(parse_model(model([record([quad], pcw=PCW_INTENSITY_2, tsp=TSP_DECAL)]), 0),
                            [dict(png="t.png")])
-        self.assertEqual(ev.tint((1.0, 1.0, 1.0, 0.0), (0.5, 0.25, 1.0)), (0.5, 0.25, 0.0, 1.0))
+        self.assertEqual(em.tint((1.0, 1.0, 1.0, 0.0), (0.5, 0.25, 1.0)), (0.5, 0.25, 0.0, 1.0))
 
     def test_paint_variants_on_body_only(self):
         quad = strip(0x12, 4, [vertex(0, 0, 0), vertex(1, 0, 0), vertex(0, 1, 0), vertex(1, 1, 0)])
@@ -180,13 +181,13 @@ class ExtractVehiclesTest(unittest.TestCase):
         self.assertEqual(info, dict(decal_primitives=2, painted_primitives=1, baked_images=3))
         length = struct.unpack_from("<I", glb, 12)[0]
         doc, binary = json.loads(glb[20:20 + length]), glb[28 + length:]
-        self.assertEqual(doc["extensionsUsed"], [ev.VARIANTS])
-        self.assertEqual(doc["extensions"][ev.VARIANTS]["variants"], [{"name": "paint_00"}, {"name": "paint_03"}])
+        self.assertEqual(doc["extensionsUsed"], [em.VARIANTS])
+        self.assertEqual(doc["extensions"][em.VARIANTS]["variants"], [{"name": "paint_00"}, {"name": "paint_03"}])
         body, extra = (m["primitives"][0] for m in doc["meshes"])
         colours = [m["extras"]["decal_alpha_colour"] for m in doc["materials"]]
         self.assertEqual(colours[body["material"]], [0.0, 0.0, 0.0, 1.0])  # yellow face * blue paint
         self.assertEqual(colours[extra["material"]], [1.0, 1.0, 0.0, 1.0])
-        mappings = body["extensions"][ev.VARIANTS]["mappings"]
+        mappings = body["extensions"][em.VARIANTS]["mappings"]
         self.assertEqual(sorted((colours[x["material"]], x["variants"]) for x in mappings),
                          [([0.0, 0.0, 0.0, 1.0], [1]), ([1.0, 0.0, 0.0, 1.0], [0])])
         self.assertEqual(len(doc["materials"]), 3)  # the unbaked material is pruned
@@ -197,7 +198,7 @@ class ExtractVehiclesTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder) / "baked.png"
             path.write_bytes(binary[view["byteOffset"]:view["byteOffset"] + view["byteLength"]])
-            self.assertEqual(ev.read_png(path), (2, 1, bytes([255, 255, 0, 255, 200, 100, 50, 255])))
+            self.assertEqual(em.read_png(path), (2, 1, bytes([255, 255, 0, 255, 200, 100, 50, 255])))
 
 
 if __name__ == "__main__":
