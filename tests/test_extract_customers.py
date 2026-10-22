@@ -36,6 +36,12 @@ def area(centre, half):
     return [(x - half, y, z - half), (x + half, y, z - half), (x + half, y, z + half), (x - half, y, z + half)]
 
 
+def afs(count):
+    """An AFS archive of count empty files."""
+    end = 8 + 8 * count
+    return b"AFS\0" + struct.pack("<I", count) + b"".join(struct.pack("<II", end, 0) for _ in range(count))
+
+
 def fixture():
     exe = Exe()
     for at, value in cu.POOL.items():
@@ -79,9 +85,15 @@ def fixture():
     for k in range(cu.KINDS):
         exe.u32(cu.KIND_TO_CHARACTER + 4 * k, 23 + k)
     for k in range(35 * cu.VOICE_SLOTS):
-        exe.u32(cu.ARCADE_VOICES + 4 * k, 1000 + k)
+        exe.u32(cu.ARCADE_VOICES + 4 * k, 100 + k)
     for k in range(cu.GENERIC_ROWS * cu.VOICE_SLOTS):
-        exe.u32(cu.GENERIC_VOICES + 4 * k, 2000 + k)
+        exe.u32(cu.GENERIC_VOICES + 4 * k, 300 + k)
+    for k in range(cu.REPLY_GROUPS * cu.REPLY_VARIANTS):
+        struct.pack_into("<3i", exe.data, cu.REPLIES + 12 * k - LOAD, 400 + k, 75, 0x7FFFFFFF)
+    for at, op in cu.CODE.items():
+        exe.u16(at, op)
+    name = cu.VOICE_AFS.encode() + b"\0"
+    exe.data[cu.VOICE_AFS_NAME - LOAD:cu.VOICE_AFS_NAME - LOAD + len(name)] = name
     for name, _, _, mini, table, count, game in cu.TABLES:
         stops = COUNTS[game][0 if game < 2 else mini] if game is not None else 8
         for k in range(count):
@@ -134,11 +146,55 @@ class CustomerTests(unittest.TestCase):
 
     def test_voice_rows_by_city(self):
         exe = cu.Executable(bytes(fixture().data))
-        self.assertEqual(cu.voice_rows(exe, 0, 2)[1], [1005, 1006, 1007, 1008, 1009])
+        self.assertEqual(cu.voice_rows(exe, 0, 2)[1], [105, 106, 107, 108, 109])
         rows = cu.voice_rows(exe, 1, 3)
         self.assertIsNone(rows[0])
-        self.assertEqual(rows[1], [1040 + v for v in range(5)])  # Original stop 1 -> Arcade row 8
+        self.assertEqual(rows[1], [140 + v for v in range(5)])  # Original stop 1 -> Arcade row 8
         self.assertEqual(cu.voice_rows(exe, 2, 1), [None])
+
+    def test_voice_path_check_rejects_another_partition(self):
+        exe = fixture()
+        exe.u16(0x0C02DD08, 0xE501)  # adxStartAfs2 now starts partition 1
+        with self.assertRaisesRegex(ValueError, "instruction at 0x0C02DD08"):
+            cu.check_pool(cu.Executable(bytes(exe.data)))
+        exe = fixture()
+        exe.data[cu.VOICE_AFS_NAME - LOAD:cu.VOICE_AFS_NAME - LOAD + 4] = b"SONG"
+        with self.assertRaisesRegex(ValueError, "partition 2 name"):
+            cu.check_pool(cu.Executable(bytes(exe.data)))
+
+    def test_reply_steps(self):
+        replies = cu.read_replies(cu.Executable(bytes(fixture().data)))
+        self.assertEqual(len(replies), 12)
+        self.assertEqual(replies[7], dict(group=2, variant=1, voice=407, start_frame=75, length=0x7FFFFFFF))
+
+    def test_voice_ids_must_be_afs_files(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "1ST_READ.BIN").write_bytes(bytes(fixture().data))
+            (Path(tmp) / cu.VOICE_AFS).write_bytes(afs(411))  # replies reach 411
+            with self.assertRaisesRegex(ValueError, "outside VOICE01.AFS's 411 files"):
+                cu.extract(tmp, Path(tmp) / "out")
+
+    def test_audio_links_and_missing_wav(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "disc"
+            source.mkdir()
+            (source / "1ST_READ.BIN").write_bytes(bytes(fixture().data))
+            (source / cu.VOICE_AFS).write_bytes(afs(500))
+            audio = Path(tmp) / "audio"
+            (audio / "VOICE01").mkdir(parents=True)
+            for v in range(500):
+                if v != 411:
+                    (audio / (cu.VOICE_FILE % v)).write_bytes(b"")
+            with self.assertRaisesRegex(ValueError, "lacks VOICE01/0411.wav"):
+                cu.extract(source, Path(tmp) / "out", audio=audio)
+            (audio / (cu.VOICE_FILE % 411)).write_bytes(b"")
+            manifest = cu.extract(source, Path(tmp) / "out", audio=audio)
+            page = (Path(tmp) / "out" / "index.html").read_text()
+            self.assertIn('<a href="../audio/VOICE01/0105.wav">105</a>', page)
+            self.assertIn('<a href="../audio/VOICE01/0400.wav">400</a>', page)
+            # 3 Arcade rows + Original row 8 + 25 generic + 12 replies
+            self.assertEqual(manifest["checks"]["voice_ids"], 15 + 5 + 25 + 12)
+            self.assertEqual(manifest["checks"]["voice_afs_files"], 500)
 
     def test_destination_out_of_range_is_rejected(self):
         exe = fixture()
@@ -154,6 +210,7 @@ class CustomerTests(unittest.TestCase):
             source = Path(tmp) / "disc"
             source.mkdir()
             (source / "1ST_READ.BIN").write_bytes(bytes(exe.data))
+            (source / cu.VOICE_AFS).write_bytes(afs(500))
             courses = Path(tmp) / "courses"
             courses.mkdir()
             line = [[10.0 * k, 0.0, 0.0] for k in range(300)]
