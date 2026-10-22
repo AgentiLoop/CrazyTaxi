@@ -208,6 +208,35 @@ player page. The run takes about 10 seconds.
   lowest key. The tool refuses to run unless 64 checked instruction and literal
   words in `AICADRV.BIN` are exactly as expected and the FNS table sits at
   `0x7084`, where this code reads it.
+* **DTPK sound requests** (header word `+0x2C`, present in SNDDC0-1 and 5-8):
+  the game sends the driver a 32-bit command; top bytes `0xA8`-`0xAD` are sound
+  requests (`0x764`), `0xA0` is a driver control command. The lookup (`0x6B40`)
+  walks the 8 loaded banks: the chunk holds the last group index (u8), then u32
+  entries `id << 16 | group offset`; the entry whose id equals `command >> 16`
+  wins. A group holds the last sequence index (u8), then u32 sequence offsets;
+  command bits 8-15 pick the sequence. All offsets are relative to the chunk. A
+  sequence's first byte is a header; with bit 7 set the rest is a **script** of
+  events, otherwise a 4-byte header is followed by a **track list** of u32 words
+  (top byte 0: events at sequence + offset, then the next word; `0x80`: send
+  the low 24 bits `<< 8` as a driver command; `0x90`: jump; anything else ends,
+  after playing the events at its offset if that is not 0). The event reader
+  (`0x6338`) is MIDI-like: a byte with bit 7 is a status (kept as running
+  status), `0xFF` ends, and the status's bits 4-6 pick how many data bytes follow
+  (jump table `0x6594`). In a script, `0xDn key velocity flag` is sent as note-on
+  `0x9n` (`0x637C` clears bit 30); the flag's low 7 bits go to command bits 4-10
+  and its bit 7 means "no delay follows". Every other event is followed by a
+  delay in ticks (one byte, or `(b << 7 | next) & ~0x4000` when the first has bit
+  7). Note-on with velocity 0 is a note-off (`0x30D4`). For a playback-definition
+  channel (program type 2, which the `+0x30` chunk starts with) note-on picks
+  definition `key + (command & 0xF0) << 3` (`0x3280`) and plays it only if the
+  velocity lies in the definition's `+0x20`..`+0x21` range (`0x32EC`). The
+  manifest's `requests` list holds every group and sequence with its timed
+  events, and each sample lists the requests that play it. `index.html` has one
+  line per request with links to the WAVs. The tool refuses to run if any of 82
+  checked words in `AICADRV.BIN` differs (the tool commit message says 104; 82
+  is the real count), a request id lies outside `0xA8`-`0xAD`, a note plays a
+  missing definition or a velocity outside its range, events run past the chunk,
+  a track list loops, or the same id appears in two packs.
 
 Verified October 22, 2026 on the USA files: **798 sounds**. They are SONG01 9
 stereo 44.1 kHz tracks (621.8 s; tracks 0 and 8 loop), VOICE01 699 mono 22.05 kHz
@@ -245,17 +274,39 @@ supports the segment rule. Two runs give identical manifests, the PCM of all 90
 samples is unchanged, and 7 WAV rates changed (SNDDC1 sample 19 stays at
 22,050 Hz, now from its split).
 
+DTPK sound requests (USA): 18 request ids with 102 sequences (SNDDC0 9 ids / 53,
+SNDDC1 3 / 19, SNDDC5 1 / 4, SNDDC6 2 / 11, SNDDC7 1 / 10, SNDDC8 1 / 5;
+SNDDC2-3 have none). The ids are `0xA800` and `0xA900`-`0xA911` without
+`0xA906` and `0xA90E`; no id appears in two packs. 101 sequences are scripts
+with header `0xC0` on channel 15; together they hold 96 note-ons and 9
+note-offs. **Every one of the 96 playback definitions is played by exactly the
+requests in its own pack, and the highest key in each pack equals its last
+definition**, which supports the key-to-definition rule. 82 of the 90 samples
+are reached by a request; the other 8 are the instrument-only samples. Only two
+scripts wait: `0xA9000D00` plays definition 14 50 ticks after 13, and
+`0xA9000E00` plays 16 20 ticks after 15. SNDDC1 `0xA9050000` and `0xA9050100`
+start two definitions at once. Requests such as `0xA9040200` (note-off for 27
+after `0xA9040100` starts it) stop looping sounds. All flag bytes are 0 or
+`0x80`, so no note uses the `<< 3` definition offset. The one track list,
+`0xA8000000`, plays nothing: it sends driver commands `0xA0001200` and
+`0xA0190000` and ends. Two runs give identical output and all 798 WAVs are
+byte-identical to the previous run.
+
 Limits:
 
 * The rate is the definition's own pitch, or the split's at its lowest key. Key
   offset (`note - 60`, used only when the channel enables it), channel
-  transpose/detune, bend and the notes actually played come from the sequence
-  data, which isn't decoded.
+  transpose/detune and bend aren't applied. The sound requests use playback
+  definitions only; which notes reach the instrument programs isn't known.
 * Random tune is listed but not applied.
+* Tick length (tempo) isn't traced, so request delays are in ticks. The
+  sequence header bits other than bit 7 (the driver reads them at `0x6BD4`-`0x6DE0`
+  when it picks or clears a sequence slot; not traced), the `0xA0` control commands,
+  and which game code sends each request id are not decoded.
 * Split curve groups 0-3 (read by the driver, not traced), the split bytes `+1`
   and `+6..+0xB`, the program header's bytes 1-7, the chunks at header words
-  `+0x20`-`+0x2C` and `+0x38` (SNDDC0 only; likely sequences and tables),
-  envelopes and filters aren't decoded.
+  `+0x20`-`+0x28` and `+0x38` (SNDDC0 only), envelopes and filters aren't
+  decoded.
 * Sample-entry word `+8` (`0x80` on SNDDC1 samples 3 and 4) is unexplained. The
   driver's sample lookup (`0x3C70`) reads only `+0`, `+4` and `+6`.
 
@@ -1215,7 +1266,7 @@ PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -v
 npm run build
 ```
 
-The 172 synthetic tests include 11 disc-extractor tests for nested directories,
+The 175 synthetic tests include 11 disc-extractor tests for nested directories,
 sector padding, partial final sectors, empty files, manifest hashes, no overwrite,
 invalid descriptors, endian disagreement, out-of-track extents, cycles, unsafe
 names, duplicates, multi-extent rejection, malformed records, truncated tracks,
@@ -1226,11 +1277,14 @@ no overwrite and cleanup. The 10 model tests cover strip winding, triangle lists
 with references, vertex-colour records, repaired attributes, malformed models,
 record chaining, GLB chunks/materials/samplers, manifest output, decal-alpha
 baking in single and city GLBs (counts, pruning, embedded pixels), no overwrite and
-cleanup. The 17 audio tests cover ADX coefficients, scale bias, prediction,
+cleanup. The 20 audio tests cover ADX coefficients, scale bias, prediction,
 stereo interleave, clamping, loop points, malformed streams, AFS tables, DTPK
 register decoding and validation, PCM8/PCM16/AICA ADPCM, the FNS table, playback
 pitch, the driver instruction check, split pitch registers, clamping and curve
-segments, instrument program/split layout and rejection, split rate sources, WAV
+segments, instrument program/split layout and rejection, split rate sources, the
+request-path driver check, script and track event streams (running status,
+two-byte delays), request groups, track lists, bad ids, missing definitions, a
+missing end, looping jumps, velocity ranges, request links, duplicate ids, WAV
 output, no overwrite and cleanup. The 9 sprite tests cover 4-bit nibble order and selectors, 8-bit
 banks and rectangular twiddling, unloaded palette entries, SH-4 delay slots,
 pool constants and forward branches, terminated tables with external records,
