@@ -19,17 +19,28 @@ All of it is static data in the USA executable (1ST_READ.BIN), read the way the 
   city entry stop * 5 + slot of a 5-wide table (USA 0x0C0D1EE8); in the Original city a fixed
   Arcade-table row for the stops it shares (ORIGINAL_ROWS) and a rotating generic table
   (USA 0x0C0D217C) for the rest; in Crazy Box always the generic table. The slot is bits 29-31
-  of passenger word +0x148 (not traced further). Values are the ids handed to the voice queue.
+  of passenger word +0x148 (not traced further).
+* The id is a VOICE01.AFS file number. Chat_TellDestination writes it as a one-step voice script
+  {id, start frame 2, length 0x7FFFFFFF} at 0x0C13D910 and queues it on channel 2 with
+  Voice_Request (USA 0x0C0720E8). Voice_ExecuteChannel (0x0C072060) passes the step's id to
+  0x0C02DCFC (adxStartAfs2), which calls ADXT_StartAfs (0x0C14F838) with partition 2, and
+  gdc_SetStreamAFS loads partition 2 from "VOICE01.AFS" (name at 0x0C08B9BC). Before that it copies
+  one of 12 reply steps (USA 0x0C0D2A2C) to 0x0C13D928 and queues it on channel 1: entry
+  3 * (byte 0x0C2AA498 - 1) + (counter 0x0C13D898 % 3). What that byte selects (4 values, the
+  driver is likely) was not traced.
 
 The table addresses are the decomp's (EU) data addresses moved by -0x1200; the tool refuses to run
-unless each is the literal the USA routine loads (POOL) and the Crazy Box jump table reaches each
-table's load. Positions are world coordinates (the space of models/BINCn.glb).
+unless each is the literal the USA routine loads (POOL), the voice path instructions are the ones
+above (CODE), and the Crazy Box jump table reaches each table's load. Every voice id must be a
+VOICE01.AFS file; with --audio the matching extract_audio.py WAV (VOICE01/NNNN.wav) must exist and
+the page links it. Positions are world coordinates (the space of models/BINCn.glb).
 Stdlib only; no upstream imports.
 """
 import argparse
 import html
 import json
 import math
+import os
 from pathlib import Path
 import shutil
 import struct
@@ -38,9 +49,12 @@ import tempfile
 try:
     from tools.extract_models import digest
     from tools.extract_collision import f32
+    from tools.extract_audio import afs_entries
 except ImportError:  # run as a script from the tools directory
     from extract_models import digest
     from extract_collision import f32
+    from extract_audio import afs_entries
+
 
 LOAD = 0x0C010000
 RECORD = 40
@@ -52,6 +66,11 @@ ARCADE_VOICES = 0x0C0D1EE8
 GENERIC_VOICES = 0x0C0D217C
 VOICE_SLOTS = 5
 GENERIC_ROWS = 5
+REPLIES = 0x0C0D2A2C  # 12 voice steps {id, start frame, length}
+REPLY_GROUPS, REPLY_VARIANTS = 4, 3
+VOICE_AFS = "VOICE01.AFS"
+VOICE_AFS_NAME = 0x0C08B9BC
+VOICE_FILE = "VOICE01/%04d.wav"  # extract_audio.py's name for VOICE01.AFS file n
 # Original-city stop -> Arcade voice-table row (Chat_TellDestination's add #40, #55 ... per stop).
 ORIGINAL_ROWS = {1: 8, 2: 11, 3: 12, 4: 13, 5: 14, 13: 19, 15: 22, 16: 7, 17: 9, 18: 30, 22: 26,
                  23: 17, 24: 17, 25: 17, 26: 17, 27: 17}
@@ -80,8 +99,24 @@ TABLES = (
 POOL = {0x0C02576C: STOP_COUNTS, 0x0C025B44: STOP_AREAS, 0x0C025780: 0x0C0D9E08, 0x0C025774: 0x0C0DC478,
         0x0C025788: 0x0C0DE408, 0x0C025784: 0x0C0E0A78, 0x0C02577C: 0x0C0E3750, 0x0C025778: 0x0C1EBF2C,
         0x0C025770: 0x0C17720C, 0x0C025768: 0x0C1EBF30, 0x0C024840: KIND_TO_CHARACTER,
-        0x0C024818: 600, 0x0C060524: ARCADE_VOICES, 0x0C060530: GENERIC_VOICES}
+        0x0C024818: 600, 0x0C060524: ARCADE_VOICES, 0x0C060530: GENERIC_VOICES,
+        # Chat_TellDestination: script buffer, reply table, length, reply selectors, Voice_Request
+        0x0C060514: 0x0C13D910, 0x0C060518: REPLIES, 0x0C0606E8: 0x7FFFFFFF, 0x0C0606EC: 0x0C2AA498,
+        0x0C0606F0: 0x0C13D898, 0x0C060700: 0x0C0720E8,
+        # Voice_ExecuteChannel -> adxStartAfs2 -> ADXT_StartAfs; gdc_SetStreamAFS partition 2 name
+        0x0C0721A0: 0x0C02DCFC, 0x0C02DDD4: 0x0C14F838, 0x0C02D7D0: VOICE_AFS_NAME}
 POOL_HALFWORDS = {0x0C024818, 0x0C02575A, 0x0C02588E}
+# USA instruction -> expected opcode on the destination voice path.
+CODE = {0x0C060668: 0xE302,  # mov #2,r3            step start frame 2
+        0x0C06066A: 0x1D31,  # mov.l r3,@(4,r13)    (r13 = 0x0C13D910)
+        0x0C06066E: 0x1D22,  # mov.l r2,@(8,r13)    step length 0x7FFFFFFF
+        0x0C060670: 0x7118,  # add #24,r1           reply step at +24
+        0x0C0606B0: 0xE501,  # mov #1,r5            reply on channel 1
+        0x0C0606C2: 0xE502,  # mov #2,r5            destination on channel 2
+        0x0C0606CA: 0x64D3,  # mov r13,r4           ... the 0x0C13D910 script
+        0x0C072080: 0x6552,  # mov.l @r5,r5         step word 0 is the file id
+        0x0C02DD08: 0xE502,  # mov #2,r5            ADXT_StartAfs partition 2
+        0x0C02D71C: 0xE402}  # mov #2,r4            ADXF_LoadPartition 2
 JUMP = 0x0C0257A4  # braf base of the Crazy Box switch on MiniGame_No - 3 (12 halfword offsets)
 JUMP_FIRST, JUMP_COUNT = 3, 12
 LONG_STOPS = 1 << 12
@@ -111,6 +146,20 @@ def check_pool(exe):
     for address, value in ((0x0C02575A, 202), (0x0C02588E, 246)):
         if exe.word(address, "<H") != value:
             raise ValueError("record count at 0x%08X is not %d" % (address, value))
+    for address, op in sorted(CODE.items()):
+        if exe.word(address, "<H") != op:
+            raise ValueError("instruction at 0x%08X is not 0x%04X" % (address, op))
+    name = VOICE_AFS.encode() + b"\0"
+    if exe.data[VOICE_AFS_NAME - LOAD:VOICE_AFS_NAME - LOAD + len(name)] != name:
+        raise ValueError("partition 2 name at 0x%08X is not %s" % (VOICE_AFS_NAME, VOICE_AFS))
+
+
+def read_replies(exe):
+    """The 12 reply steps: group = byte 0x0C2AA498 - 1, variant = counter % 3."""
+    return [dict(group=k // REPLY_VARIANTS, variant=k % REPLY_VARIANTS,
+                 voice=exe.word(REPLIES + 12 * k, "<i"), start_frame=exe.word(REPLIES + 12 * k + 4, "<i"),
+                 length=exe.word(REPLIES + 12 * k + 8, "<i"))
+            for k in range(REPLY_GROUPS * REPLY_VARIANTS)]
 
 
 def jump_targets(exe):
@@ -209,7 +258,7 @@ def svg_map(stops, customers):
     return "".join(out)
 
 
-def extract(source, output, courses=None):
+def extract(source, output, courses=None, audio=None):
     source, output = Path(source).resolve(), Path(output).absolute()
     if output.exists():
         raise ValueError("output already exists")
@@ -265,17 +314,50 @@ def extract(source, output, courses=None):
             for s, row in zip(stops, rows):
                 s["voices"] = row
         stop_list.append(entry)
-    manifest = dict(schema=1, load_address=LOAD, record_size=RECORD,
-                    sources={"1ST_READ.BIN": dict(size=len(data), sha256=digest(data))},
+    replies = read_replies(exe)
+    voice_data = (source / VOICE_AFS).read_bytes()
+    clips = len(afs_entries(voice_data))
+    used = sorted({v for row in generic for v in row} | {r["voice"] for r in replies}
+                  | {v for e in stop_list for s in e["stops"] for v in (s.get("voices") or [])})
+    if not all(0 <= v < clips for v in used):
+        raise ValueError("voice id outside %s's %d files" % (VOICE_AFS, clips))
+    link = None
+    if audio is not None:
+        missing = [v for v in used if not (Path(audio) / (VOICE_FILE % v)).is_file()]
+        if missing:
+            raise ValueError("audio folder lacks %s" % (VOICE_FILE % missing[0]))
+        base = os.path.relpath(Path(audio).absolute(), output)
+        link = lambda v: '<a href="%s">%d</a>' % (html.escape(Path(base, VOICE_FILE % v).as_posix()), v)
+    checks.update(voice_ids=len(used), voice_afs_files=clips)
+    manifest = dict(schema=2, load_address=LOAD, record_size=RECORD,
+                    sources={"1ST_READ.BIN": dict(size=len(data), sha256=digest(data)),
+                             VOICE_AFS: dict(size=len(voice_data), sha256=digest(voice_data))},
                     addresses=dict(stop_counts=STOP_COUNTS, stop_areas=STOP_AREAS, kind_to_character=KIND_TO_CHARACTER,
-                                   arcade_voices=ARCADE_VOICES, generic_voices=GENERIC_VOICES, jump_table=JUMP),
+                                   arcade_voices=ARCADE_VOICES, generic_voices=GENERIC_VOICES, jump_table=JUMP,
+                                   replies=REPLIES),
                     destination_rule="kyakuTaskStart asks for destinations[(frame counter / 600) % 3]",
+                    voice_rule="a voice id is %s file n (extract_audio.py %s); the destination line plays on "
+                               "voice channel 2 from frame 2, the reply on channel 1 from its start frame"
+                               % (VOICE_AFS, VOICE_FILE),
                     kind_to_character=kinds, generic_voices=generic, original_voice_rows=ORIGINAL_ROWS,
-                    checks=checks, stop_sets=stop_list, customer_sets=sets, files=[])
+                    replies=replies, checks=checks, stop_sets=stop_list, customer_sets=sets, files=[])
     gallery = ['<!doctype html><meta charset="utf-8"><title>Crazy Taxi customers</title>',
-               '<style>body{font-family:system-ui;background:#222;color:#eee}td{padding:2px 8px}</style>',
+               '<style>body{font-family:system-ui;background:#222;color:#eee}td{padding:2px 8px}a{color:#9cf}</style>',
                '<h1>Local Crazy Taxi customers and stops</h1><p>Top view (x right, z down). Green: stop areas with '
-               'their numbers; yellow: customers (hover for kind and destinations).</p>']
+               'their numbers; yellow: customers (hover for kind and destinations). Numbers in the voice tables '
+               'are %s files.</p>' % VOICE_AFS]
+    show = link or str
+    for e in stop_list:
+        if e["game_no"] < 2:
+            gallery.append("<h2>%s stop voices</h2><table>" % ("Arcade", "Original")[e["game_no"]])
+            gallery.extend("<tr><td>stop %d</td><td>%s</td></tr>" % (s["index"], "generic" if not s["voices"] else
+                           " ".join(show(v) for v in s["voices"])) for s in e["stops"])
+            gallery.append("</table>")
+    gallery.append("<h2>Generic destination voices</h2><table>%s</table>" % "".join(
+        "<tr><td>row %d</td><td>%s</td></tr>" % (r, " ".join(show(v) for v in row)) for r, row in enumerate(generic)))
+    gallery.append("<h2>Replies (channel 1)</h2><table>%s</table>" % "".join(
+        "<tr><td>group %d variant %d</td><td>%s</td><td>frame %d</td></tr>"
+        % (r["group"], r["variant"], show(r["voice"]), r["start_frame"]) for r in replies))
     output.parent.mkdir(parents=True, exist_ok=True)
     staging = Path(tempfile.mkdtemp(prefix=".customers-", dir=output.parent))
     try:
@@ -304,9 +386,10 @@ def main():
     parser.add_argument("source", type=Path, help="extracted disc directory")
     parser.add_argument("--output", type=Path, required=True, help="new local output directory")
     parser.add_argument("--courses", type=Path, help="extract_courses.py output, for the line-index check")
+    parser.add_argument("--audio", type=Path, help="extract_audio.py output, to link the voice WAVs")
     args = parser.parse_args()
     try:
-        manifest = extract(args.source, args.output, args.courses)
+        manifest = extract(args.source, args.output, args.courses, args.audio)
     except (ValueError, OSError, KeyError) as error:
         parser.exit(1, "error: %s\n" % error)
     print("Wrote %d customer tables (%d customers, %d destinations) and %d stop sets into %s"
