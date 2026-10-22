@@ -54,7 +54,8 @@ GDI layouts, cooked sectors, CHD decompression, interleaved or multi-extent file
 now exports the four TEXDC banks and the model conversion exports POLDC/BINC
 geometry, the audio conversion exports ADX and DTPK sounds, and the sprite
 conversion exports the SPR banks; the character conversion assembles people and
-exports their V-format motions; the vehicle conversion assembles traffic and cabs.
+exports their V-format motions; the vehicle conversion assembles traffic and cabs;
+the set-object conversion places the OBJDC street props.
 The decomp's `tools/model_map.py` documents model/texture mappings (lines 6–50 and
 83–93). Do not apply region-specific executable addresses to this USA build
 without validating them. No upstream source or game data was copied into the
@@ -118,8 +119,8 @@ our tool also reads them, while the decomp skips them because their strips have
 Eight BINC1 vertices have NaN U values; these are replaced with 0 and counted in
 `repaired_vertices`. All 1,699 GLBs passed Khronos `gltf-validator`, with every
 image URI resolved, and reported 0 errors and 0 warnings. Characters are assembled
-by the character conversion below and vehicles by the vehicle conversion. Not yet
-exported: placing POLDC1–3 props.
+by the character conversion below, vehicles by the vehicle conversion and the
+street props (set objects) by the set-object conversion.
 
 ## Audio conversion (WAV)
 
@@ -357,6 +358,69 @@ Assumptions and limits:
 * The default cab set's wheel models (one thin disc twice, one full axle twice) are
   placed as the game would place them, so its axle models overlap.
 
+## Set objects (glTF 2.0)
+
+```sh
+python3 tools/extract_props.py local-assets/disc \
+  --textures local-assets/textures --output local-assets/props
+```
+
+This takes about 11 seconds and writes `OBJDC1.glb` (Arcade), `OBJDC2.glb`
+(Original) and `OBJDC3.glb` (Crazy Box), `manifest.json` and `index.html`. These
+are the knock-over street objects (the decomp's "set objects": postboxes, signs,
+crates and so on). Positions are world coordinates, so each file lines up with the
+same city's `models/BINCn.glb`.
+
+* **OBJDCn.BIN.** `loadCity` loads the first 0x8000 bytes at a fixed address and
+  uses the absolute pointers inside unchanged. The tool takes the one 64 KiB-aligned
+  word in the executable under which every file's pointers resolve: USA
+  `0x0CE90000`. 32-byte groups from offset 0 (centre, `+0x10` count, `+0x14` first
+  record) until the first empty one, then 32-byte records (position, `+0x0C` Y angle
+  in 1/65536 turns, `+0x10` kind, `+0x12` variant, `+0x14` next record). Arcade has
+  58 groups and 527 objects, Original 63 and 505, Crazy Box 24 and 401; every
+  chain length equals its group count.
+* **Kinds.** The longest run of 0x24-byte records in the executable: USA
+  `0x0C0EC998`, 28 kinds (sphere offsets and radii, count, `+0x0C` X angle, hit
+  handler, flags, mass). The model table is the one run of exactly 28 pointers to
+  model-pointer arrays: USA `0x0C0ECF8C`; each array runs to the next one.
+* **Placement (USA `setObjPlace` `0x0C03737C` and the draw in `SetObjFly`).**
+  Translate to the position, `nlRotateAY(angle)`, `nlRotateAX(kind X angle)`,
+  then the model. The USA `nlRotateAY`/`nlRotateAX` (`0x0C0775E0`/`0x0C077430`)
+  were read to fix the sign of each rotation. POLDC0 models use TEXDC0; the
+  city's own models (kind 16 in Arcade, kinds 17 and 19 in Crazy Box) use TEXDCn.
+* **Groups a run opens (USA `InitSetObject` `0x0C037728`).** Arcade walks groups
+  0–57 and empties group 24 first; Original walks 0–62; Crazy Box walks a range per
+  mini game (`MiniGame_No` 3: 0, 1: 1–2, 8: 3, 9: 4–9, 14: 10–23, others 24–57).
+  Scene "props" holds the groups some run opens, scene "unused" the rest (only
+  Arcade group 24). Each group node lists its runs in `extras`.
+
+Checks:
+
+* The decomp's model map has 50 rows for this model table (EU `0x0C0EDFB0`); all
+  50 give the same POLDC0 offset at the same index in the USA table. The table
+  entries it has no row for (kind 0, and the city models of kinds 16, 17 and 19)
+  are models the map lists under other tables.
+* Every object's model is in POLDC0 or in its own city's POLDCn, and every variant
+  is inside its kind's array.
+* With the rotation applied, the lowest point of each model sits on the city
+  surface under it (a ray through `BINCn.glb`): median gap 0.01, 0.007 and 0.005
+  units, and within 0.5 units for 488 of 527, 461 of 505 and 379 of 401 objects.
+  Kind 5, which also has a 90° X turn, sits flat too.
+* All 3 GLBs pass the Khronos `gltf-validator` with 0 errors and 0 warnings, and
+  every texture URI resolves. Two runs give identical output. 1,396, 1,679 and
+  1,435 triangles; no model has been visually inspected.
+
+Assumptions and limits:
+
+* This is the resting layout. In play an object is drawn only within 1000 units of
+  the camera, groups open and close by distance, and a hit object flies, bounces
+  and is removed (`SetObjFly`); none of that is exported, though the manifest
+  keeps each kind's collision spheres and mass.
+* The Crazy Box mini game numbers are `MiniGame_No` values; which menu game each
+  is was not checked.
+* Kinds 21–27 have models but no OBJDC record uses them; whatever places them (if
+  anything) is not traced. SPLDCn, LANDDCn and COLDCn are not read here.
+
 ## Tests and web build
 
 ```sh
@@ -364,7 +428,7 @@ PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -v
 npm run build
 ```
 
-The 72 synthetic tests include 11 disc-extractor tests for nested directories,
+The 78 synthetic tests include 11 disc-extractor tests for nested directories,
 sector padding, partial final sectors, empty files, manifest hashes, no overwrite,
 invalid descriptors, endian disagreement, out-of-track extents, cycles, unsafe
 names, duplicates, multi-extent rejection, malformed records, truncated tracks,
@@ -388,5 +452,9 @@ cover base/table/motion/select-table discovery, quaternions, world positions,
 looping animation output and no overwrite. The 6 vehicle tests cover traffic-table
 runs, names, colour tables, model-file ownership (including ambiguity), putCarModel
 wheel/mirror/level rules, cab-table discovery and set lengths, and multi-scene GLBs
-with shared meshes. No disc image is required.
+with shared meshes. The 6 set-object tests cover record chains and their
+rejection (count mismatch, pointers past the loaded bytes, empty files), the
+load-address search, the kind table and spheres, the exact-length model table and
+array bounds, and the Y-then-X rotation against the SH-4 matrices. No disc image
+is required.
 The Python tests are invoked separately; `npm test` does not run them.
