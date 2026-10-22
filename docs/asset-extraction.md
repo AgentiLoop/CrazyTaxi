@@ -979,12 +979,15 @@ Assumptions and limits:
 
 ```sh
 python3 tools/extract_customers.py local-assets/disc --output local-assets/customers \
-  --courses local-assets/courses
+  --courses local-assets/courses --audio local-assets/audio
 ```
 
-Runs in under a second and reads only `1ST_READ.BIN` (`--courses` is optional and
-only feeds one check). Writes `manifest.json` and an `index.html` with one top-view
-map per customer table: green stop areas with their numbers, yellow customers.
+Runs in under a second and reads `1ST_READ.BIN` and `VOICE01.AFS` (`--courses` is
+optional and only feeds one check; `--audio`, the audio tool's output, is optional
+and only adds links). Writes `manifest.json` and an `index.html` with the voice ids
+per stop, the generic rows and the replies (linked to `VOICE01/NNNN.wav` when
+`--audio` is given), then one top-view map per customer table: green stop areas
+with their numbers, yellow customers.
 
 Everything is static data in the executable, read the way these routines read it
 (USA addresses; the decomp's are the EU ones):
@@ -1014,11 +1017,25 @@ Everything is static data in the executable, read the way these routines read it
   `0x0C0D217C`; Crazy Box always the generic table. `slot` is bits 29–31 of
   passenger word `+0x148`. Each stop lists its five ids as `voices` (`null` =
   generic line).
+* A voice id is a `VOICE01.AFS` file number, so `VOICE01/NNNN.wav` from the audio
+  tool. The path: `Chat_TellDestination` writes the id as a one-step voice script
+  `{id, start frame 2, length 0x7FFFFFFF}` at `0x0C13D910` and queues it on voice
+  channel 2 with `Voice_Request` (`0x0C0720E8`). `Voice_ExecuteChannel`
+  (`0x0C072060`) hands the step's first word to `adxStartAfs2` (`0x0C02DCFC`),
+  which calls `ADXT_StartAfs` (`0x0C14F838`) with partition 2. `gdc_SetStreamAFS`
+  loads partition 2 from the name `VOICE01.AFS` (`0x0C08B9BC`, 700 slots) and
+  partition 1 from `SONG01.AFS`.
+* Before the destination, the same routine queues a reply step on channel 1: entry
+  `3 × (byte 0x0C2AA498 − 1) + (counter 0x0C13D898 mod 3)` of a 12-step table at
+  `0x0C0D2A2C` (`replies`: group, variant, voice, start frame, length).
 
 The table addresses are the decomp's data addresses moved by −0x1200. The tool
 refuses to run unless each is the word the USA routine loads from its literal pool,
-each Crazy Box case label loads its table, and the 17 tables lie back to back
-(`0x0C0D9E08`–`0x0C0E37A0`).
+the voice-path instructions are the expected ones (start frame, channels, partition
+2 in both the start and the load call, step word 0 as the id) and the partition name
+is `VOICE01.AFS`, each Crazy Box case label loads its table, and the 17 tables lie
+back to back (`0x0C0D9E08`–`0x0C0E37A0`). Every voice id must be below the
+`VOICE01.AFS` file count, and with `--audio` its WAV must exist.
 
 Results on the USA files (verified October 22, 2026):
 
@@ -1032,20 +1049,22 @@ Results on the USA files (verified October 22, 2026):
 * `line_index_in_file` is the nearest course-0 point (x/z) for 246/246 Arcade and
   201/202 Arcade reverse customers. It does not match for Original (1/246 and
   8/246), so its meaning there is unknown.
+* 154 distinct voice ids (stop rows, generic rows and replies), all below
+  `VOICE01.AFS`'s 699 files. The 12 replies all start at frame 75 with no length
+  limit: groups 0–3 use files 27/2/28, 68/46/69, 128/151/129 and 112/87/113.
 * Two runs give identical output.
 
 Assumptions and limits:
 
 * "Reverse" is only the decomp's variable name; what the player sees for it wasn't
   checked.
-* The voice values are what the routine queues. That they are `VOICE01` entry
-  numbers is likely (all are below 699) but not traced through the voice player, and
-  who each of the five slots is wasn't traced.
+* Who speaks each of the five slots wasn't traced, and what byte `0x0C2AA498`
+  selects (4 reply groups; the driver is likely) wasn't traced either. No clip was
+  listened to.
 * The CourseMode 0 / mini game 15 table has no stop set attached: its destination
   isn't checked.
 * Stop names are not in this data; the Arcade/Original destination pictures
   (landmarks tool) may correspond but weren't matched.
-
 ## Tests and web build
 
 ```sh
@@ -1053,7 +1072,7 @@ PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -v
 npm run build
 ```
 
-The 151 synthetic tests include 11 disc-extractor tests for nested directories,
+The 155 synthetic tests include 11 disc-extractor tests for nested directories,
 sector padding, partial final sectors, empty files, manifest hashes, no overwrite,
 invalid descriptors, endian disagreement, out-of-track extents, cycles, unsafe
 names, duplicates, multi-extent rejection, malformed records, truncated tracks,
@@ -1109,9 +1128,11 @@ The 7 motion-use tests cover pool-load decoding, table extents (non-motion words
 and other table starts), routine starts from push runs, the entry check, the
 function table's order, prefix groups and a full extraction with labelled tables,
 data-only words, no overwrite and a rejected entry.
-The 8 customer tests cover the literal-pool check (rejecting a moved table), the
+The 12 customer tests cover the literal-pool check (rejecting a moved table), the
 Crazy Box jump table, back-to-back tables, stop centre and radius, the 40-byte
-record, voice rows per city, an out-of-range destination and a deterministic full
-extraction with the line-index check and no overwrite.
+record, voice rows per city, the voice-path instruction and partition-name checks,
+the reply steps, voice ids beyond the AFS file count, audio links and a missing
+WAV, an out-of-range destination and a deterministic full extraction with the
+line-index check and no overwrite.
 No disc image is required.
 The Python tests are invoked separately; `npm test` does not run them.
