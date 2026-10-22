@@ -110,6 +110,15 @@ Triangle lists (`gflag` bit 3: three entries per polygon) and strips are both
 handled, and two-word vertex references resolve to shared vertices. Records with
 specular `-3` use a vertex-colour layout: signed-byte normal in word 3, ARGB colour
 in word 4, then U/V. These were found in the USA data and exported as `COLOR_0`.
+Records with TSP shading 2 (decal alpha) are the exception to referenced textures:
+the PowerVR shows texture RGB × texture alpha + face RGB × (1 − texture alpha) with
+the face alpha as alpha, which glTF cannot express. Those textures are baked with
+the face colour the USA record drawer (`0x0C080E20`) sends and embedded as PNGs
+(the same rule and code as the vehicle conversion, without traffic paint; colour
+type 3 records take the previous colour type 2 record's face colour). No fade
+colour is applied; its initial value (USA `0x0C0E93AC`) is 1, 1, 1. The manifest
+gives `decal_records` (and `baked_images` for a POLDC model, or per BINC file) when
+a model has any.
 Triangles are wound so they face the same way as the stored vertex normals.
 Coordinates are kept as stored; handedness has not been checked against the
 running game.
@@ -123,7 +132,13 @@ our tool also reads them, while the decomp skips them because their strips have
 206–302 entries and its scan stops at 200.
 Eight BINC1 vertices have NaN U values; these are replaced with 0 and counted in
 `repaired_vertices`. All 1,699 GLBs passed Khronos `gltf-validator`, with every
-image URI resolved, and reported 0 errors and 0 warnings. Characters are assembled
+image URI resolved, and reported 0 errors and 0 warnings. Decal alpha: 21 models
+have such records (POLDC0 18, POLDC2 3; none in POLDC1, POLDC3 or the BINC
+archives), 88 records in all, giving 76 baked images and 87 baked materials (face colours white, yellow
+(1, 1, 0) and (1, 0.994, 1)). Only those 21 GLBs differ from the unbaked output;
+they validate with 0 errors and 0 warnings, every baked image re-decodes to the
+decal-alpha rule applied to its TEXDC PNG pixel for pixel, and two runs give
+identical output. Characters are assembled
 by the character conversion below, vehicles by the vehicle conversion and the
 street props (set objects) by the set-object conversion.
 
@@ -431,8 +446,10 @@ Assumptions and limits:
 * Paint is the static colour only: lighting (the records' intensity), the offset
   colour and runtime fade changes are not applied. Which colour a given car gets
   is random in play.
-* The single-model GLBs from `extract_models.py` still show decal-alpha textures
-  unbaked (plain texture); only the vehicle GLBs bake them.
+* `extract_models.py` bakes decal alpha with the same code (moved there) but with
+  the unpainted face colour, so its POLDC0 traffic bodies show the face colour,
+  not a traffic paint. The vehicle GLBs were byte-identical before and after the
+  move.
 
 ## Set objects (glTF 2.0)
 
@@ -880,16 +897,17 @@ PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -v
 npm run build
 ```
 
-The 135 synthetic tests include 11 disc-extractor tests for nested directories,
+The 136 synthetic tests include 11 disc-extractor tests for nested directories,
 sector padding, partial final sectors, empty files, manifest hashes, no overwrite,
 invalid descriptors, endian disagreement, out-of-track extents, cycles, unsafe
 names, duplicates, multi-extent rejection, malformed records, truncated tracks,
 invalid sector mode and cleanup. The 15 texture tests cover every pixel/layout
 pair, twiddling, rectangular tiles, VQ, mip offsets, table aliases/alignment,
 ambiguous or malformed tables, payload sizes, PNG CRCs/scanlines, manifest/gallery,
-no overwrite and cleanup. The 9 model tests cover strip winding, triangle lists
+no overwrite and cleanup. The 10 model tests cover strip winding, triangle lists
 with references, vertex-colour records, repaired attributes, malformed models,
-record chaining, GLB chunks/materials/samplers, manifest output, no overwrite and
+record chaining, GLB chunks/materials/samplers, manifest output, decal-alpha
+baking in single and city GLBs (counts, pruning, embedded pixels), no overwrite and
 cleanup. The 10 audio tests cover ADX coefficients, scale bias, prediction,
 stereo interleave, clamping, loop points, malformed streams, AFS tables, DTPK
 register decoding and validation, PCM8/PCM16/AICA ADPCM, WAV output, no overwrite
