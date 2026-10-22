@@ -59,7 +59,8 @@ the set-object conversion places the OBJDC street props; the collision conversio
 exports the COLDC ground and wall grids; the course-line conversion exports the
 SPLDC traffic lanes with their links; the destination-picture conversion decodes
 the LANDDC pictures with their names; the Fcv conversion exports the key-curve
-motions at the start of MOTDC.
+motions at the start of MOTDC; the recorded-drive conversion exports the four
+REC* input recordings.
 The decomp's `tools/model_map.py` documents model/texture mappings (lines 6–50 and
 83–93). Do not apply region-specific executable addresses to this USA build
 without validating them. No upstream source or game data was copied into the
@@ -709,6 +710,72 @@ Assumptions and limits:
   characters tool already places the V draw routine's extras.
 * No animation has been viewed.
 
+## Recorded drives (JSON)
+
+```sh
+python3 tools/extract_replays.py local-assets/disc --output local-assets/replays
+```
+
+Runs in about a second. Writes `recadvac.json`, `recadvdc.json`,
+`recendac.json` and `recenddc.json` (one column per field, one entry per frame),
+`manifest.json` and an `index.html` that charts steering, accelerator and brake.
+
+Each `REC*.BIN` is 108,000 bytes: **5,400 frame records of 20 bytes**. The USA
+replay routine (`0x0C04AE88`; its set-up at `0x0C04ADF8` sets the frame limit to
+5,400) copies one record per frame into the player's input block:
+
+| Offset | Type | Field |
+| --- | --- | --- |
+| `+0x00` | f32 | steering, −1…1 (pad X through `padToAnalog`) |
+| `+0x04` | f32 | accelerator, 0…1 (copied to the car's throttle) |
+| `+0x08` | f32 | brake, 0…1 (copied to the car's brake) |
+| `+0x0C` | u32 | buttons: `0x200000` reverse held, `0x100000` drive held, `0x20` reverse pressed, `0x10` drive pressed |
+| `+0x10` | u32 | value of the game's random generator on that frame |
+
+Field meanings come from the decomp's `padToAnalog` and car-control code (the
+throttle and brake floats feed car `+0x118` and `+0x11C`; the two held bits set
+reverse or drive gear). During playback the routine calls the generator and
+compares the result with `+0x10`, but discards the comparison.
+
+Found in the USA files, with no regional address reused: the executable's only
+literal pool holding the four file-name pointers in a row (`0x0C02BD74`). The two
+words before the loader routine's address give the buffer `0x0C30C000` and its
+capacity `0x1C000`. The loader at `0x0C02BCAE` picks the Adv files when
+`0x0C1EBF54` is 0 and the End files otherwise, and the AC file when the city mode
+`0x0C1EBF2C` is 0 (Arcade), DC otherwise (Original). The tool labels the files
+"advertise"/"ending" and Arcade/Original from that pool order.
+
+Checks (verified October 22, 2026 on the USA files):
+
+* **Ranges and buttons.** Every steering value is in −1…1, accelerator and
+  brake in 0…1, and the only button bits are the four above. A pressed bit
+  appears only on a frame where its held bit rises (10–12 reverse and 6–8 drive
+  presses per file); the parser rejects anything else.
+* **Random generator.** The generator is `seed = seed × 1103515245 + 12345`,
+  value `(seed >> 16) & 0x7FFF` (`0x0C048AA6`), reseeded with 12345
+  (`0x0C048AA0`, called from three places). Every file's frame 0 holds 21468, the
+  first value after that reseed. The tool follows the generator from frame to
+  frame (up to 1,024 calls) and treats 21468 as a reseed:
+  * Adv/Arcade: 5,378 of 5,400 frames match, with 29 reseeds; Adv/Original:
+    5,368 frames, 33 reseeds. Every unmatched frame except the last is the frame
+    just before a reseed. Most frames take 20–35 calls.
+  * End/Arcade: frames 0–179 match (12–17 calls per frame) and then 3,491–4,011
+    after a reseed (701 frames in all). End/Original: frames 0–179 and
+    3,491–5,398 (2,088). The frames in between don't follow the generator
+    within 1,024 calls; why was not traced.
+* Two runs give identical output.
+
+Assumptions and limits:
+
+* The frame rate of the recordings was not traced; 5,400 frames would be 90 s at
+  60 fps or 3 minutes at 30 fps.
+* Only inputs are stored. Playing a drive back needs the game's start state and
+  deterministic car, traffic and customer simulation, which this project doesn't
+  have. The tables `setReplayType` selects by city (`0x0C0A3600`/`0x0C0F2CF0`
+  Arcade, `0x0C0B1700`/`0x0C0F2E88` Original) were not decoded.
+* The roles "advertise" (attract-mode demo) and "ending" are read from the file
+  names; what triggers the End files wasn't traced.
+
 ## Tests and web build
 
 ```sh
@@ -716,7 +783,7 @@ PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -v
 npm run build
 ```
 
-The 114 synthetic tests include 11 disc-extractor tests for nested directories,
+The 122 synthetic tests include 11 disc-extractor tests for nested directories,
 sector padding, partial final sectors, empty files, manifest hashes, no overwrite,
 invalid descriptors, endian disagreement, out-of-track extents, cycles, unsafe
 names, duplicates, multi-extent rejection, malformed records, truncated tracks,
@@ -760,5 +827,8 @@ angles, the game's key search (out-of-order keys, uncovered frames keeping the
 old value), back-to-back motion discovery and gap rejection, the motion table's
 order check, solver lengths and bind table, the bone tree, rotation order and the
 head quarter turn, IK reach, out-of-reach limbs, looping and a full extraction.
+The 8 recorded-drive tests cover field columns, range, unknown-bit and
+press-without-rising-edge rejection, the loader pool (order, capacity), generator
+continuations, reseeds, lost state and the call limit, and a full extraction.
 No disc image is required.
 The Python tests are invoked separately; `npm test` does not run them.
