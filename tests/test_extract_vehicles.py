@@ -1,13 +1,24 @@
 """Synthetic vehicle fixtures: no game files or upstream modules required."""
 import json
+from pathlib import Path
 import struct
+import tempfile
 import unittest
+import zlib
 
 from tools import extract_vehicles as ev
-from tests.test_extract_models import quad_model
+from tools.extract_models import parse_model
+from tools.extract_textures import png_bytes
+from tests.test_extract_models import model, quad_model, record, strip, vertex
 
 LOAD = ev.LOAD
 BASE0, CITY = 0x0C390000, 0x0C5E0000
+PCW_INTENSITY_1, PCW_INTENSITY_2 = 0x8000002C, 0x8000003C  # colour type 2 / 3, textured
+TSP_DECAL = 0x2009A49B  # shading instruction 2 (decal alpha)
+
+
+def chunk(tag, body):
+    return struct.pack(">I", len(body)) + tag + body + struct.pack(">I", zlib.crc32(tag + body))
 
 
 def files():
@@ -125,6 +136,68 @@ class ExtractVehiclesTest(unittest.TestCase):
         self.assertEqual(doc["nodes"][1]["translation"], [1.0, 2.0, 3.0])
         self.assertEqual(builder.triangles, 2)
         self.assertEqual([p["scene"] for p in builder.placed], ["near", "near", "far"])
+
+    def test_decal_alpha_and_png_round_trip(self):
+        rgba = bytes([10, 20, 30, 0, 200, 100, 50, 255, 0, 0, 0, 51])
+        self.assertEqual(ev.decal_alpha(rgba, (1.0, 0.5, 0.0, 1.0)),
+                         bytes([255, 128, 0, 255, 200, 100, 50, 255, 204, 102, 0, 255]))
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "t.png"
+            path.write_bytes(png_bytes(3, 1, rgba))
+            self.assertEqual(ev.read_png(path), (3, 1, rgba))
+            raw = zlib.compress(b"\x01" + rgba)
+            path.write_bytes(b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", 3, 1, 8, 6, 0, 0, 0))
+                             + chunk(b"IDAT", raw) + chunk(b"IEND", b""))
+            with self.assertRaises(ValueError):
+                ev.read_png(path)
+
+    def test_mark_decals_inherits_last_intensity_1_face(self):
+        quad = strip(0x12, 4, [vertex(0, 0, 0), vertex(1, 0, 0), vertex(0, 1, 0), vertex(1, 1, 0)])
+        data = model([record([quad], pcw=PCW_INTENSITY_1, tsp=TSP_DECAL, face=(1.0, 1.0, 1.0, 0.0)),
+                      record([quad], pcw=PCW_INTENSITY_2, tsp=TSP_DECAL, face=(1.0, 0.5, 0.5, 0.5)),
+                      record([quad])])
+        parsed = parse_model(data, 0)
+        self.assertEqual(ev.mark_decals(parsed, [dict(png="t.png")]), 2)
+        self.assertEqual([r["decal_face"] for r in parsed["records"]],
+                         [(1.0, 1.0, 1.0, 0.0), (1.0, 1.0, 1.0, 0.0), None])
+        with self.assertRaises(ValueError):
+            ev.mark_decals(parse_model(model([record([quad], pcw=PCW_INTENSITY_2, tsp=TSP_DECAL)]), 0),
+                           [dict(png="t.png")])
+        self.assertEqual(ev.tint((1.0, 1.0, 1.0, 0.0), (0.5, 0.25, 1.0)), (0.5, 0.25, 0.0, 1.0))
+
+    def test_paint_variants_on_body_only(self):
+        quad = strip(0x12, 4, [vertex(0, 0, 0), vertex(1, 0, 0), vertex(0, 1, 0), vertex(1, 1, 0)])
+        decal = model([record([quad], pcw=PCW_INTENSITY_1, tsp=TSP_DECAL, face=(1.0, 1.0, 1.0, 0.0))])
+        blob = bytes(0x100) + decal + bytes(-len(decal) % 0x100) + decal
+        second = 0x100 + len(decal) + (-len(decal) % 0x100)
+        with tempfile.TemporaryDirectory() as folder:
+            (Path(folder) / "t.png").write_bytes(png_bytes(2, 1, bytes([10, 20, 30, 0, 200, 100, 50, 255])))
+            builder = ev.Builder("TEXDC0.BIN", [dict(png="t.png")], "../", blob, BASE0, ("near",), Path(folder))
+            builder.put(0, "body", BASE0 + 0x100)
+            builder.put(0, "extra", BASE0 + second)
+            info = builder.paint([("paint_00", (1.0, 0.0, 0.0)), ("paint_03", (0.0, 0.0, 1.0))], 1)
+            glb = builder.glb()
+        self.assertEqual(info, dict(decal_primitives=2, painted_primitives=1, baked_images=3))
+        length = struct.unpack_from("<I", glb, 12)[0]
+        doc, binary = json.loads(glb[20:20 + length]), glb[28 + length:]
+        self.assertEqual(doc["extensionsUsed"], [ev.VARIANTS])
+        self.assertEqual(doc["extensions"][ev.VARIANTS]["variants"], [{"name": "paint_00"}, {"name": "paint_03"}])
+        body, extra = (m["primitives"][0] for m in doc["meshes"])
+        colours = [m["extras"]["decal_alpha_colour"] for m in doc["materials"]]
+        self.assertEqual(colours[body["material"]], [0.0, 0.0, 0.0, 1.0])  # yellow face * blue paint
+        self.assertEqual(colours[extra["material"]], [1.0, 1.0, 0.0, 1.0])
+        mappings = body["extensions"][ev.VARIANTS]["mappings"]
+        self.assertEqual(sorted((colours[x["material"]], x["variants"]) for x in mappings),
+                         [([0.0, 0.0, 0.0, 1.0], [1]), ([1.0, 0.0, 0.0, 1.0], [0])])
+        self.assertEqual(len(doc["materials"]), 3)  # the unbaked material is pruned
+        self.assertEqual(len(doc["images"]), 3)
+        image = doc["images"][doc["textures"][doc["materials"][extra["material"]]["pbrMetallicRoughness"]
+                                              ["baseColorTexture"]["index"]]["source"]]
+        view = doc["bufferViews"][image["bufferView"]]
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "baked.png"
+            path.write_bytes(binary[view["byteOffset"]:view["byteOffset"] + view["byteLength"]])
+            self.assertEqual(ev.read_png(path), (2, 1, bytes([255, 255, 0, 255, 200, 100, 50, 255])))
 
 
 if __name__ == "__main__":
