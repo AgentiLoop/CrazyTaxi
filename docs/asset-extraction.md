@@ -52,8 +52,8 @@ GDI layouts, cooked sectors, CHD decompression, interleaved or multi-extent file
 
 **The disc extractor recovers original containers.** The texture conversion below
 now exports the four TEXDC banks and the model conversion exports POLDC/BINC
-geometry, and the audio conversion exports ADX and DTPK sounds; sprite banks and
-motion remain undecoded.
+geometry, the audio conversion exports ADX and DTPK sounds, and the sprite
+conversion exports the SPR banks; motion remains undecoded.
 The decomp's `tools/model_map.py` documents model/texture mappings (lines 6–50 and
 83–93). Do not apply region-specific executable addresses to this USA build
 without validating them. No upstream source or game data was copied into the
@@ -159,6 +159,58 @@ All 798 WAVs open in `ffprobe` without errors. Clamping to 16 bits affects 718
 music samples and 215 voice samples. Not yet done: DTPK programs/sequences (pitch,
 envelopes and which sample each sound effect plays).
 
+## Sprite conversion (PNG)
+
+```sh
+python3 tools/extract_sprites.py local-assets/disc --output local-assets/sprites
+```
+
+The `SPR*.BIN` files are headerless texture data. Each one's 16-byte texture records are in
+`1ST_READ.BIN` as a run ended by an all-`0xFF` record. The run whose packed size
+equals the file's size is its table. Records pointing outside the file (one
+128×128 render target in SPRCOMM) are listed as `external` with no PNG.
+
+Most sprites (448 of 687) are palettised twiddled textures: Kamui type 5 (4-bit,
+low nibble first) and type 7 (8-bit). The files hold neither palettes nor palette
+selectors. The tool recovers both from the game's own loader code. A linear
+SH-4 pass tracks constant registers (`mov #imm`, PC-relative `mov.w`/`mov.l`,
+`mov Rm,Rn`, delay slots, forward `bra`) and records `r4`–`r6` at every call:
+
+* The sprite loader takes `(table, selector array)`. It writes `selector[i]` into
+  TCW bits 21–26 for pixel formats 5 and 6. A null array means no palettes
+  (SPRBOX, SPRADV).
+* The menu loader that loads SPRCOMM copies four palettes into palette RAM:
+  entries 0, 256 and 512 (256 each) and 768 (16), at `0x0C08A688`, `0x0C08A828`,
+  `0x0C08AA28` and `0x0C08A808`. These are ARGB4444: the game calls
+  `paletteSetMode(2)` (decomp `src/game_p.c`), and the 16-bit entries ramp
+  `0x0FFF`→`0xFFFF` for antialiased white fonts. The executable holds three other
+  literal references to the upload routine (pool words at `0x0C073434`,
+  `0x0C079978` and `0x0C080084`, inside SDK code). They were not traced, so the
+  banks 1–2 used in-game are assumed to be the ones the menu loaded.
+* An 8-bit texture reads entry `(selector & 0x30) * 16 + index`. A 4-bit texture
+  reads `selector * 16 + index`. The selectors found are 0, 16 and 32 for 8-bit
+  and 48 (the 16-entry font palette) for 4-bit.
+
+Texture numbers (`texture_number`) come from the executable's
+(common-texture offset, table) word pairs. They match the
+`nlSetCommonTextureOffset` values passed before each load (for example
+SPRCOMM 0, SPRGAME 240, SPRMENG 860).
+
+Verified October 22, 2026 on the USA files: **687 PNGs from 11 banks** (SPRADV 13,
+SPRBOX 23, SPRCENG 19, SPRCJAP 19, SPRCOMM 122 + 1 external, SPRGAME 217, SPRGENG 4,
+SPRGJAP 7, SPRMENG 113, SPRMENU 54, SPRMJAP 96; ~2 s). All 239 non-palettised
+textures match the decomp's `textures.decode` RGBA bit for bit (fed a synthetic
+PVRT header). The decomp does not decode palettised data, so the other 448 have no
+outside reference. Checks done on them instead:
+
+* Every texture indexes only palette entries that were loaded.
+* No bank-0 texture uses an index of 192 or above, where bank 0 overlaps the next
+  uploads.
+* Font and digit sprites read as clean glyphs when printed as text, which confirms
+  the twiddle order and nibble order.
+
+Palette RAM in-game could still differ if a code path not found here rewrites it.
+
 ## Tests and web build
 
 ```sh
@@ -166,7 +218,7 @@ PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -v
 npm run build
 ```
 
-The 45 synthetic tests include 11 disc-extractor tests for nested directories,
+The 54 synthetic tests include 11 disc-extractor tests for nested directories,
 sector padding, partial final sectors, empty files, manifest hashes, no overwrite,
 invalid descriptors, endian disagreement, out-of-track extents, cycles, unsafe
 names, duplicates, multi-extent rejection, malformed records, truncated tracks,
@@ -179,5 +231,8 @@ record chaining, GLB chunks/materials/samplers, manifest output, no overwrite an
 cleanup. The 10 audio tests cover ADX coefficients, scale bias, prediction,
 stereo interleave, clamping, loop points, malformed streams, AFS tables, DTPK
 register decoding and validation, PCM8/PCM16/AICA ADPCM, WAV output, no overwrite
-and cleanup. No disc image is required.
+and cleanup. The 9 sprite tests cover 4-bit nibble order and selectors, 8-bit
+banks and rectangular twiddling, unloaded palette entries, SH-4 delay slots,
+pool constants and forward branches, terminated tables with external records,
+texture-number pairs, PNG/manifest output and no overwrite. No disc image is required.
 The Python tests are invoked separately; `npm test` does not run them.
