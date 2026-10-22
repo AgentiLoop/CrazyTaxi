@@ -53,7 +53,8 @@ GDI layouts, cooked sectors, CHD decompression, interleaved or multi-extent file
 **The disc extractor recovers original containers.** The texture conversion below
 now exports the four TEXDC banks and the model conversion exports POLDC/BINC
 geometry, the audio conversion exports ADX and DTPK sounds, and the sprite
-conversion exports the SPR banks; motion remains undecoded.
+conversion exports the SPR banks; the character conversion assembles people and
+exports their V-format motions.
 The decomp's `tools/model_map.py` documents model/texture mappings (lines 6–50 and
 83–93). Do not apply region-specific executable addresses to this USA build
 without validating them. No upstream source or game data was copied into the
@@ -116,8 +117,9 @@ our tool also reads them, while the decomp skips them because their strips have
 206–302 entries and its scan stops at 200.
 Eight BINC1 vertices have NaN U values; these are replaced with 0 and counted in
 `repaired_vertices`. All 1,699 GLBs passed Khronos `gltf-validator`, with every
-image URI resolved, and reported 0 errors and 0 warnings. Not yet exported: character
-skeleton assembly, traffic car part sets, motion, and placing POLDC1–3 props.
+image URI resolved, and reported 0 errors and 0 warnings. Characters are assembled
+by the character conversion below. Not yet exported: traffic car part sets and
+placing POLDC1–3 props.
 
 ## Audio conversion (WAV)
 
@@ -211,6 +213,87 @@ outside reference. Checks done on them instead:
 
 Palette RAM in-game could still differ if a code path not found here rewrites it.
 
+## Characters and motions (glTF 2.0)
+
+After the texture step:
+
+```sh
+python3 tools/extract_characters.py local-assets/disc \
+  --textures local-assets/textures --output local-assets/characters
+```
+
+This writes `characters/char_XX.glb` (one assembled person per character-table
+entry, standing), `motions.glb` (one animation per motion), `manifest.json` and
+`index.html` in about 18 s. Bones are nodes named `bone_0`–`bone_15`. Each body
+part is a child mesh node of its bone. Every motion targets the same node names,
+so three.js can play any clip from `motions.glb` on any character.
+
+Nothing is taken from the decomp's European addresses. The tool finds them all in
+the USA files:
+
+* **POLDC0 load address** `0x0C390000`: the 64 KiB-aligned base that turns the
+  most executable words into POLDC0 model addresses.
+* **Character table** `0x0C131EB8`: the longest run of pointers to 16-slot part
+  arrays (slot 0 empty, the rest null or POLDC0 models). It has 63 entries.
+* **MOTDC load address** `0x0C880000` and its **56 V-format motions**. Each
+  header is `{frames, 15, data}`, and the data (`frames` × 396 bytes) ends at the
+  header. All 56 headers agree on the base.
+* **Skeleton, bind offsets and extra parts**, from the game's own draw routine.
+  Of the functions that load the character table, only one can be run end to end
+  by a small symbolic SH-4 interpreter with V-format rotations: `0x0C0689D4`. The
+  interpreter runs that routine once per character, starting from the executable's
+  initial data. It records the matrix push/pop calls, translations (bind vectors at
+  `0x0C0D4290`–`0x0C0D4320`, or the motion's root vector), rotations and model
+  draws. It picks the five primitives by how they are called, not by address:
+  `0x0C077260` push, `0x0C077210` pop, `0x0C0779F0` translate, `0x0C06A160`
+  rotate, `0x0C078FC0` draw.
+
+Results, verified October 22, 2026 on the USA files:
+
+* **63 characters, 1,014 part draws, 25,354 triangles.** All 63 characters share
+  one 16-bone tree. Its bones, parents and bind offsets match the decomp's
+  `docs/engine.md` table exactly.
+* **Extra parts.** The draw routine adds 122 extra parts on top of the slot
+  parts, picked by `cmp/eq` chains and a `braf` jump table on the character
+  number. They include all 94 extras in the decomp's `models.txt`, plus 28 it
+  does not list (mostly hip and thigh pieces). Two of them, the left-hand extras
+  of characters `0x21` and `0x24`, are gated by the flag at `0x0C13DAA0`. That
+  flag is 1 in the executable's initial data, so they are drawn here; at runtime
+  it may change.
+* **Cabbies.** The character-select table at `0x0C12F454` (idle motion, select
+  motion, character) names characters `0x3B`–`0x3E`. The manifest labels them
+  Axel, B.D. Joe, Gena and Gus, in the selection screen's order.
+* **Rest pose.** Each character stands in record 1 of the standing idle at
+  MOTDC offset `0x263244`. In that pose the pelvis is at y 10.58, the head joint at
+  15.06 and the ankles at 1.25, and bones 7 and 14 (right side) sit at +x, as the
+  decomp describes. Character `0x3B`'s parts span y 0.02–18.3, x ±2.9.
+* **Rotations.** A record holds the root vector, then two unit vectors a and c
+  per bone. The rotation's columns are a, c and a × c. Every rotation in every
+  record is orthonormal to within 1.5e-6.
+* **Validation.** All 64 GLBs pass the Khronos `gltf-validator` with 0 errors and
+  0 warnings, and every texture URI resolves. Two runs produce identical output.
+
+How the animations are built, and what is assumed:
+
+* **Looping.** The game plays record `frame mod (frames − 1) + 1`, so record 0
+  is never shown. Each animation therefore holds records 1…frames−1, then
+  record 1 again to close the loop.
+* **Frame rate.** Keys are spaced at a nominal 30 fps; the game's real playback
+  rate has not been established.
+* **Root movement.** Translation is the full root vector, which matches the
+  draw routine's mode 0. Walking customers use mode 1, which keeps only the
+  height (the game moves them by root travel instead); `root_travel` in the
+  manifest shows which clips move.
+* **Interpolation.** Rotations are interpolated as quaternions. The game instead
+  averages the a and c vectors and normalises them, so in-between frames can
+  differ slightly.
+
+Not exported:
+
+* The first `0x17CAB4` bytes of MOTDC: the cab drivers' key-curve (Fcv) motions,
+  played with two-bone IK.
+* The low-detail 8-part people table at `0x0C1324D4`.
+
 ## Tests and web build
 
 ```sh
@@ -218,7 +301,7 @@ PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -v
 npm run build
 ```
 
-The 54 synthetic tests include 11 disc-extractor tests for nested directories,
+The 66 synthetic tests include 11 disc-extractor tests for nested directories,
 sector padding, partial final sectors, empty files, manifest hashes, no overwrite,
 invalid descriptors, endian disagreement, out-of-track extents, cycles, unsafe
 names, duplicates, multi-extent rejection, malformed records, truncated tracks,
@@ -234,5 +317,10 @@ register decoding and validation, PCM8/PCM16/AICA ADPCM, WAV output, no overwrit
 and cleanup. The 9 sprite tests cover 4-bit nibble order and selectors, 8-bit
 banks and rectangular twiddling, unloaded palette entries, SH-4 delay slots,
 pool constants and forward branches, terminated tables with external records,
-texture-number pairs, PNG/manifest output and no overwrite. No disc image is required.
+texture-number pairs, PNG/manifest output and no overwrite. The 12 character tests
+run a hand-assembled draw routine symbolically (pool loads, delay slots, `cmp/eq`
+branches on the character, a `braf` jump table, unresolved-branch rejection),
+identify its primitives, build the bone tree, reject unbalanced matrix stacks, and
+cover base/table/motion/select-table discovery, quaternions, world positions,
+looping animation output and no overwrite. No disc image is required.
 The Python tests are invoked separately; `npm test` does not run them.
