@@ -42,6 +42,27 @@ def afs(count):
     return b"AFS\0" + struct.pack("<I", count) + b"".join(struct.pack("<II", end, 0) for _ in range(count))
 
 
+def landdc(count, empty=()):
+    """An AFS archive of count 4-byte pictures (entries in empty are all zero)."""
+    data = b"".join(b"\0\0\0\0" if k in empty else b"\xff\xff\xff\xff" for k in range(count))
+    start = 8 + 8 * count
+    return (b"AFS\0" + struct.pack("<I", count) + b"".join(struct.pack("<II", start + 4 * k, 4) for k in range(count))
+            + data)
+
+
+NAMES = ["Arcade %d" % k for k in range(3)] + ["Original %d" % k for k in range(5)]
+
+
+def write_disc(folder, exe, voices=500):
+    folder = Path(folder)
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / "1ST_READ.BIN").write_bytes(bytes(exe.data))
+    (folder / cu.VOICE_AFS).write_bytes(afs(voices))
+    for name in cu.LANDMARK_FILES:
+        (folder / name).write_bytes(landdc(4))
+    return folder
+
+
 def fixture():
     exe = Exe()
     for at, value in cu.POOL.items():
@@ -94,6 +115,24 @@ def fixture():
         exe.u16(at, op)
     name = cu.VOICE_AFS.encode() + b"\0"
     exe.data[cu.VOICE_AFS_NAME - LOAD:cu.VOICE_AFS_NAME - LOAD + len(name)] = name
+    for at, value in cu.LANDMARK_POOL.items():
+        if at in cu.LANDMARK_HALFWORDS:
+            exe.u16(at, value)
+        else:
+            exe.u32(at, value)
+    for at, op in cu.LANDMARK_CODE.items():
+        exe.u16(at, op)
+    # destination names: one string-pointer run and the (Arcade, Original) base pair PutLandmark loads
+    strings = []
+    for text in NAMES:
+        at = exe.alloc(len(text) + 1)
+        exe.data[at - LOAD:at - LOAD + len(text)] = text.encode()
+        strings.append(at)
+    names = exe.alloc(4 * len(NAMES) + 4)
+    for k, at in enumerate(strings):
+        exe.u32(names + 4 * k, at)
+    exe.u32(cu.LANDMARK_NAME_BASES, names)
+    exe.u32(cu.LANDMARK_NAME_BASES + 4, names + 12)
     for name, _, _, mini, table, count, game in cu.TABLES:
         stops = COUNTS[game][0 if game < 2 else mini] if game is not None else 8
         for k in range(count):
@@ -169,17 +208,13 @@ class CustomerTests(unittest.TestCase):
 
     def test_voice_ids_must_be_afs_files(self):
         with tempfile.TemporaryDirectory() as tmp:
-            (Path(tmp) / "1ST_READ.BIN").write_bytes(bytes(fixture().data))
-            (Path(tmp) / cu.VOICE_AFS).write_bytes(afs(411))  # replies reach 411
+            write_disc(tmp, fixture(), 411)  # replies reach 411
             with self.assertRaisesRegex(ValueError, "outside VOICE01.AFS's 411 files"):
                 cu.extract(tmp, Path(tmp) / "out")
 
     def test_audio_links_and_missing_wav(self):
         with tempfile.TemporaryDirectory() as tmp:
-            source = Path(tmp) / "disc"
-            source.mkdir()
-            (source / "1ST_READ.BIN").write_bytes(bytes(fixture().data))
-            (source / cu.VOICE_AFS).write_bytes(afs(500))
+            source = write_disc(Path(tmp) / "disc", fixture())
             audio = Path(tmp) / "audio"
             (audio / "VOICE01").mkdir(parents=True)
             for v in range(500):
@@ -196,6 +231,51 @@ class CustomerTests(unittest.TestCase):
             self.assertEqual(manifest["checks"]["voice_ids"], 15 + 5 + 25 + 12)
             self.assertEqual(manifest["checks"]["voice_afs_files"], 500)
 
+    def test_landmark_path_check_rejects_a_changed_step(self):
+        cu.check_landmark_path(cu.Executable(bytes(fixture().data)))
+        exe = fixture()
+        exe.u16(0x0C024784, 0x7214)  # kyakuTaskStart no longer skips the -1 stop entry
+        with self.assertRaisesRegex(ValueError, "instruction at 0x0C024784"):
+            cu.check_landmark_path(cu.Executable(bytes(exe.data)))
+        exe = fixture()
+        exe.u16(0x0C06D00C, 0x144)  # SetLandmark fed from another passenger word
+        with self.assertRaisesRegex(ValueError, "pool word 0x0C06D00C"):
+            cu.check_landmark_path(cu.Executable(bytes(exe.data)))
+
+    def test_landmark_names_follow_the_city_bases(self):
+        names, firsts = cu.landmark_names(cu.Executable(bytes(fixture().data)))
+        self.assertEqual((names, firsts), (NAMES, [0, 3]))
+        exe = fixture()
+        exe.u32(cu.LANDMARK_NAME_BASES, 0)
+        exe.u32(cu.LANDMARK_NAME_BASES + 4, 0)
+        with self.assertRaisesRegex(ValueError, "name table"):
+            cu.landmark_names(cu.Executable(bytes(exe.data)))
+
+    def test_stop_landmarks_pictures_and_empty_entry(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            source = write_disc(Path(tmp) / "disc", fixture())
+            pictures = Path(tmp) / "landmarks"
+            for folder in ("LANDDC1", "LANDDC2"):
+                (pictures / folder).mkdir(parents=True)
+                for k in range(3):
+                    (pictures / folder / ("%02d.png" % k)).write_bytes(b"")
+            (pictures / "LANDDC2" / "01.png").unlink()
+            with self.assertRaisesRegex(ValueError, "lacks the picture for LANDDC2.AFS entry 1"):
+                cu.extract(source, Path(tmp) / "out", landmarks=pictures)
+            (pictures / "LANDDC2" / "01.png").write_bytes(b"")
+            manifest = cu.extract(source, Path(tmp) / "out", landmarks=pictures)
+            arcade, original = manifest["stop_sets"][:2]
+            self.assertEqual([s["landmark"] for s in arcade["stops"]],
+                             [dict(file="LANDDC1.AFS", entry=k, name="Arcade %d" % k) for k in range(3)])
+            self.assertEqual([s["landmark"]["name"] for s in original["stops"]], ["Original 0", "Original 1"])
+            self.assertTrue(all("landmark" not in s for e in manifest["stop_sets"][2:] for s in e["stops"]))
+            self.assertEqual(manifest["checks"]["stops_named"], 5)
+            page = (Path(tmp) / "out" / "index.html").read_text()
+            self.assertIn('<img src="../landmarks/LANDDC2/01.png" width="64" height="64">Original 1', page)
+            (source / "LANDDC1.AFS").write_bytes(landdc(4, empty={2}))
+            with self.assertRaisesRegex(ValueError, "LANDDC1.AFS has no picture for stop 2"):
+                cu.extract(source, Path(tmp) / "out2")
+
     def test_destination_out_of_range_is_rejected(self):
         exe = fixture()
         struct.pack_into("<b", exe.data, 0x0C0D9E08 + 0x18 - LOAD, 5)  # Arcade fixture has 3 stops
@@ -207,10 +287,7 @@ class CustomerTests(unittest.TestCase):
     def test_full_extraction(self):
         exe = fixture()
         with tempfile.TemporaryDirectory() as tmp:
-            source = Path(tmp) / "disc"
-            source.mkdir()
-            (source / "1ST_READ.BIN").write_bytes(bytes(exe.data))
-            (source / cu.VOICE_AFS).write_bytes(afs(500))
+            source = write_disc(Path(tmp) / "disc", exe)
             courses = Path(tmp) / "courses"
             courses.mkdir()
             line = [[10.0 * k, 0.0, 0.0] for k in range(300)]
