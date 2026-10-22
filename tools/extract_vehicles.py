@@ -47,16 +47,13 @@ from pathlib import Path
 import shutil
 import struct
 import tempfile
-import zlib
 
 try:
-    from tools.extract_models import Gltf, digest, find_models, material_key, parse_model
+    from tools.extract_models import Gltf, digest, find_models, mark_decals, parse_model
     from tools.extract_characters import LOAD, find_base, words
-    from tools.extract_textures import png_bytes
 except ImportError:  # run as a script from the tools directory
-    from extract_models import Gltf, digest, find_models, material_key, parse_model
+    from extract_models import Gltf, digest, find_models, mark_decals, parse_model
     from extract_characters import LOAD, find_base, words
-    from extract_textures import png_bytes
 
 RECORD = 0xA8
 RECORD_WORDS = RECORD // 4
@@ -65,9 +62,6 @@ MODEL_WORDS = list(range(0, 6)) + list(range(6, 22)) + list(range(22, 28))
 CAB_SETS = 5
 CAB_BODY_DROP = 1.2  # putPlayerCar: nlTranslate(0, -1.2, 0) before the body (USA 0x0C02045C)
 CAB_SLOTS = {0: "wheel_0", 1: "wheel_1", 2: "wheel_2", 3: "wheel_3", 4: "body", 5: "rear_5", 6: "rear_6"}
-DECAL_ALPHA = 2  # TSP shading instruction (bits 6-7)
-INTENSITY_1, INTENSITY_2 = 2, 3  # PCW colour type (bits 4-5)
-VARIANTS = "KHR_materials_variants"
 
 
 def f32(word):
@@ -200,105 +194,14 @@ def cab_sets(executable, table, sets):
     return result
 
 
-def read_png(path):
-    """(width, height, RGBA bytes) of a PNG written by extract_textures.png_bytes (8-bit RGBA, unfiltered rows)."""
-    data = Path(path).read_bytes()
-    if data[:8] != b"\x89PNG\r\n\x1a\n":
-        raise ValueError("%s is not a PNG" % path)
-    p, head, idat = 8, None, b""
-    while p + 8 <= len(data):
-        size, tag = struct.unpack_from(">I4s", data, p)
-        if tag == b"IHDR":
-            head = struct.unpack(">IIBBBBB", data[p + 8:p + 21])
-        elif tag == b"IDAT":
-            idat += data[p + 8:p + 8 + size]
-        p += 12 + size
-    if head is None or head[2:] != (8, 6, 0, 0, 0):
-        raise ValueError("%s is not an 8-bit RGBA PNG" % path)
-    width, height = head[:2]
-    rows, stride = zlib.decompress(idat), width * 4 + 1
-    if len(rows) != stride * height or any(rows[y * stride] for y in range(height)):
-        raise ValueError("%s uses PNG row filters" % path)
-    return width, height, b"".join(rows[y * stride + 1:(y + 1) * stride] for y in range(height))
-
-
-def decal_alpha(rgba, colour):
-    """PowerVR decal-alpha shading: RGB = texture RGB * texture A + colour RGB * (1 - texture A), A = colour A."""
-    level = [min(255, max(0, int(round(255 * c)))) for c in colour]
-    table = {}
-    for k in range(0, len(rgba), 4):
-        pixel = rgba[k:k + 4]
-        if pixel not in table:
-            a = pixel[3]
-            table[pixel] = bytes([int(round((pixel[n] * a + level[n] * (255 - a)) / 255.0)) for n in range(3)]
-                                 + [level[3]])
-    return b"".join(table[rgba[k:k + 4]] for k in range(0, len(rgba), 4))
-
-
-def mark_decals(model, textures):
-    """Store the (A, R, G, B) face colour the PowerVR shows as "decal_face" on every decal-alpha
-    textured record (None on the others); returns how many were marked.
-
-    Colour type 3 (intensity mode 2) records carry no face colour to the PowerVR (the record
-    drawer skips it), so they show the last colour type 2 record's face colour."""
-    last, marked = None, 0
-    for r in model["records"]:
-        kind = r["pcw"] >> 4 & 3
-        if kind == INTENSITY_1:
-            last = tuple(r["face"])
-        r["decal_face"] = None
-        if r["tsp"] >> 6 & 3 != DECAL_ALPHA or not 0 <= r["texture"] < len(textures):
-            continue
-        if kind not in (INTENSITY_1, INTENSITY_2) or last is None:
-            raise ValueError("decal-alpha record without a face colour")
-        r["decal_face"] = last
-        marked += 1
-    return marked
-
-
-def tint(face, paint):
-    """RGBA of an (A, R, G, B) face colour times a fade-base RGB."""
-    return tuple(round(face[1 + n] * paint[n], 6) for n in range(3)) + (round(face[0], 6),)
-
-
-def prune(doc):
-    """Drop materials, textures and images nothing refers to any more, renumbering references."""
-    primitives = [p for m in doc["meshes"] for p in m["primitives"]]
-    mappings = [x for p in primitives for x in p.get("extensions", {}).get(VARIANTS, {}).get("mappings", [])]
-    keep = sorted(set(p["material"] for p in primitives) | set(x["material"] for x in mappings))
-    renumber = dict((old, new) for new, old in enumerate(keep))
-    doc["materials"] = [doc["materials"][k] for k in keep]
-    for item in primitives + mappings:
-        item["material"] = renumber[item["material"]]
-    refs = [m["pbrMetallicRoughness"]["baseColorTexture"] for m in doc["materials"]
-            if "baseColorTexture" in m["pbrMetallicRoughness"]]
-    keep = sorted(set(r["index"] for r in refs))
-    renumber = dict((old, new) for new, old in enumerate(keep))
-    doc["textures"] = [doc["textures"][k] for k in keep]
-    for r in refs:
-        r["index"] = renumber[r["index"]]
-    keep = sorted(set(t["source"] for t in doc["textures"]))
-    renumber = dict((old, new) for new, old in enumerate(keep))
-    doc["images"] = [doc["images"][k] for k in keep]
-    for t in doc["textures"]:
-        t["source"] = renumber[t["source"]]
-
-
-class VehicleGltf(Gltf):
-    """Gltf whose material keys end with the record's decal face colour (None when not decal alpha)."""
-
-    def material_key(self, record):
-        return material_key(record, self.textures) + (record.get("decal_face"),)
-
-
 class Builder(object):
     """One vehicle GLB: named scenes, one node per placed model, meshes shared by address."""
 
     def __init__(self, bank_name, bank, root, data, base, scenes, texture_dir=None):
-        self.gltf = VehicleGltf(bank_name, bank, root)
+        self.gltf = Gltf(bank_name, bank, root, texture_dir)
         self.gltf.doc["scenes"] = [dict(name=s, nodes=[]) for s in scenes]
         self.data, self.base, self.meshes, self.triangles, self.placed = data, base, {}, 0, []
-        self.texture_dir, self.bodies, self.images = texture_dir, set(), {}
+        self.bodies = set()
 
     def put(self, scene, label, address, translation=None):
         offset = address - self.base
@@ -321,62 +224,9 @@ class Builder(object):
         self.placed.append(dict(scene=self.gltf.doc["scenes"][scene]["name"], part=label, offset=offset,
                                 translation=item.get("translation", [0.0, 0.0, 0.0])))
 
-    def baked_texture(self, number, colour, sampler):
-        """Texture index of an embedded PNG: texture `number` baked with decal alpha over `colour`."""
-        doc = self.gltf.doc
-        if (number, colour) not in self.images:
-            width, height, rgba = read_png(self.texture_dir / self.gltf.textures[number]["png"])
-            payload = png_bytes(width, height, decal_alpha(rgba, colour))
-            while len(self.gltf.blob) % 4:
-                self.gltf.blob.append(0)
-            doc["bufferViews"].append(dict(buffer=0, byteOffset=len(self.gltf.blob), byteLength=len(payload)))
-            self.gltf.blob.extend(payload)
-            doc.setdefault("images", []).append(dict(bufferView=len(doc["bufferViews"]) - 1, mimeType="image/png"))
-            self.images[(number, colour)] = len(doc["images"]) - 1
-        doc["textures"].append(dict(source=self.images[(number, colour)], sampler=sampler))
-        return len(doc["textures"]) - 1
-
     def paint(self, paints=(), default=0):
-        """Bake every decal-alpha material: primitives of body meshes get paints[default] (an RGB
-        fade base) and one KHR_materials_variants variant per paint; others keep the face colour."""
-        doc = self.gltf.doc
-        keys = dict((v, k) for k, v in self.gltf.material_ids.items())
-        baked, decals = {}, []
-        for mesh, item in enumerate(doc["meshes"]):
-            decals += [(mesh, p) for p in item["primitives"] if keys[p["material"]][-1] is not None]
-
-        def material(key, colour):
-            if (key, colour) not in baked:
-                item = json.loads(json.dumps(doc["materials"][self.gltf.material_ids[key]]))
-                pbr = item["pbrMetallicRoughness"]
-                sampler = doc["textures"][pbr["baseColorTexture"]["index"]]["sampler"]
-                pbr["baseColorTexture"] = dict(index=self.baked_texture(key[0], colour, sampler))
-                item["name"] += "_decal_%02x%02x%02x" % tuple(int(round(255 * c)) for c in colour[:3])
-                item["extras"]["decal_alpha_colour"] = list(colour)
-                doc["materials"].append(item)
-                baked[(key, colour)] = len(doc["materials"]) - 1
-            return baked[(key, colour)]
-
-        if paints and any(mesh in self.bodies for mesh, _ in decals):
-            doc.setdefault("extensionsUsed", []).append(VARIANTS)
-            doc.setdefault("extensions", {})[VARIANTS] = dict(variants=[dict(name=name) for name, _ in paints])
-        painted = 0
-        for mesh, primitive in decals:
-            key = keys[primitive["material"]]
-            if not (paints and mesh in self.bodies):
-                primitive["material"] = material(key, tint(key[-1], (1.0, 1.0, 1.0)))
-                continue
-            choices = [material(key, tint(key[-1], rgb)) for _, rgb in paints]
-            primitive["material"] = choices[default]
-            mapping = {}
-            for variant, m in enumerate(choices):
-                mapping.setdefault(m, []).append(variant)
-            primitive["extensions"] = {VARIANTS: dict(mappings=[dict(material=m, variants=v)
-                                                                for m, v in sorted(mapping.items())])}
-            painted += 1
-        if decals:
-            prune(doc)
-        return dict(decal_primitives=len(decals), painted_primitives=painted, baked_images=len(self.images))
+        """Bake every decal-alpha material; body meshes get paints[default] and one variant per paint."""
+        return self.gltf.bake_decals(paints, default, self.bodies)
 
     def glb(self):
         self.gltf.doc["scenes"] = [s for s in self.gltf.doc["scenes"] if s["nodes"]]
