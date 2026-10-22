@@ -37,9 +37,23 @@ def afs(entries):
     return table + bytes(at - len(table)) + bytes(body)
 
 
-def dtpk(entries, payload, playbacks=()):
+def split(sample, low, high, points):
+    """An instrument split: four one-point 4-byte curves, then the pitch curve's 6-byte
+    (last key, base, slope) points, padded to 4 bytes."""
+    body = bytearray(0x18)
+    struct.pack_into("<HBB", body, 2, 0x100 + sample, low, high)
+    for group in range(5):
+        body[0xC + 2 * group:0xE + 2 * group] = bytes((len(points) if group == 4 else 1, 12 + 4 * group))
+    body += bytes(16)
+    for last_key, base, slope in points:
+        body += struct.pack("<BBHh", last_key, 0, base, slope)
+    body += bytes(-len(body) % 4)
+    body[0] = len(body)
+    return bytes(body)
+def dtpk(entries, payload, playbacks=(), programs=()):
     """A DTPK pack whose sample table sits at 0x40, entries as (pcms, loop flag, offset, size, lsa, lea),
-    then (if given) a playback chunk at the end with 64-byte (sample, semitones, detune) definitions."""
+    then (if given) a playback chunk at the end with 64-byte (sample, semitones, detune) definitions
+    and an instrument chunk of programs, each a list of split() byte strings."""
     table = struct.pack("<I", len(entries) - 1)
     for pcms, looped, offset, size, lsa, lea in entries:
         register = looped << 9 | pcms << 7 | offset >> 16
@@ -59,6 +73,14 @@ def dtpk(entries, payload, playbacks=()):
             chunk += entry
         struct.pack_into("<I", data, 0x30, len(data))
         data += chunk
+    if programs:
+        chunk = bytearray(4 + 4 * len(programs))
+        chunk[0] = len(programs) - 1
+        for number, splits in enumerate(programs):
+            struct.pack_into("<I", chunk, 4 + 4 * number, len(chunk))
+            chunk += bytes((len(splits) - 1,)) + bytes(7) + b"".join(splits)
+        struct.pack_into("<I", data, 0x34, len(data))
+        data += chunk
     return bytes(data)
 
 
@@ -67,8 +89,11 @@ def fns_table():
 
 
 def driver():
-    """A stand-in sound driver: a few code bytes, then the FNS table at an even offset."""
-    return b"\xea" * 6 + struct.pack("<768H", *fns_table()) + b"\0\x08"
+    """A stand-in sound driver: the checked instruction words, then the FNS table at 0x7084."""
+    data = bytearray(0x7084)
+    for address, word in audio.INSTRUMENT_CODE.items():
+        struct.pack_into("<I", data, address, word)
+    return bytes(data) + struct.pack("<768H", *fns_table()) + b"\0\x08"
 
 
 class AudioTests(unittest.TestCase):
@@ -129,10 +154,61 @@ class AudioTests(unittest.TestCase):
 
     def test_driver_fns_table(self):
         at, table = audio.driver_fns_table(driver())
-        self.assertEqual((at, table[:4], table[-1]), (6, [0, 1, 2, 3], 1022))
+        self.assertEqual((at, table[:4], table[-1]), (0x7084, [0, 1, 2, 3], 1022))
         for bad in (b"\0" + driver(), driver()[:-10]):
             with self.subTest(size=len(bad)), self.assertRaises(ValueError):
                 audio.driver_fns_table(bad)
+    def test_instrument_code_check(self):
+        audio.check_instrument_code(driver(), 0x7084)
+        with self.assertRaises(ValueError):
+            audio.check_instrument_code(driver(), 0x7086)
+        for address in (0x55E8, 0x5FCC, 0x61AC):
+            changed = bytearray(driver())
+            changed[address] ^= 1
+            with self.subTest(address=address), self.assertRaises(ValueError):
+                audio.check_instrument_code(bytes(changed), 0x7084)
+        with self.assertRaises(ValueError):
+            audio.check_instrument_code(driver()[:0x6000], 0x7084)
+    def test_split_pitch_rate(self):
+        table = fns_table()
+        self.assertEqual(audio.split_pitch_rate(3072, table), (0, 44100.0))
+        self.assertEqual(audio.split_pitch_rate(2688, table), (0x7800, 22050.0))
+        self.assertEqual(audio.split_pitch_rate(-5, table), (0x4000, 44100 / 256))
+        # Clamped to 0x17FF: octave 15 - 8 = 7, step 383 reads table entry 766.
+        register, rate = audio.split_pitch_rate(0x2000, table)
+        self.assertEqual(register, 0x3800 | table[766])
+        self.assertAlmostEqual(rate, 44100 * 128 * (1024 + table[766]) / 1024)
+        # 1/32 semitone units: 32 up is one semitone, table entry 64.
+        self.assertEqual(audio.split_pitch_rate(3072 + 32, table)[0], table[64])
+    def test_split_pitch_segments(self):
+        points = [dict(last_key=100, base=2592, slope=780), dict(last_key=127, base=2720, slope=910)]
+        self.assertEqual([audio.split_pitch(points, 58, key) for key in (58, 100, 101, 127)],
+                         [2592, 2592 + (780 * 42 >> 8), 2720, 2720 + (910 * 26 >> 8)])
+        self.assertEqual(audio.split_pitch([dict(last_key=50, base=3000, slope=-256)], 0, 60), 2940)
+    def test_dtpk_instruments(self):
+        entries = [(1, 0, 0x60, 2, 0, 2), (1, 0, 0x62, 2, 0, 2)]
+        programs = [[split(1, 0, 70, [(70, 2464, 702)]), split(0, 58, 127, [(100, 2592, 780), (127, 2720, 910)])],
+                    [split(1, 0, 127, [(127, 2688, 323)])]]
+        data = dtpk(entries, b"\x10\x20\x30\x40", programs=programs)
+        found = audio.dtpk_instruments(data, 2, fns_table())
+        self.assertEqual([(p["id"], [(s["sample"], s["keys"], s["size"]) for s in p["splits"]]) for p in found],
+                         [(0, [(1, [0, 70], 0x30), (0, [58, 127], 0x34)]), (1, [(1, [0, 127], 0x30)])])
+        last = found[0]["splits"][1]
+        self.assertEqual((last["at_low_key"]["pitch"], last["at_high_key"]["pitch"]), (2592, 2812))
+        self.assertEqual(found[1]["splits"][0]["at_low_key"]["rate"], 22050.0)
+        self.assertEqual(audio.dtpk_instruments(dtpk(entries, bytes(4)), 2, fns_table()), [])
+        at = struct.unpack_from("<I", data, 0x34)[0]
+        first = at + 4 + 4 * 2 + 8
+        cases = {"global sample": (first + 3, 0x00), "size": (first, 0x34), "keys": (first + 5, 0x80),
+                 "pitch order": (first + 0x30 + 0x2E, 50), "curve offset": (first + 0xF, 13),
+                 "program offset": (at + 8, 0x40), "split count": (at + 4 * 3, 9)}
+        for name, (offset, value) in cases.items():
+            changed = bytearray(data)
+            changed[offset] = value
+            with self.subTest(case=name), self.assertRaises(ValueError):
+                audio.dtpk_instruments(bytes(changed), 2, fns_table())
+        with self.assertRaises(ValueError):
+            audio.dtpk_instruments(data, 1, fns_table())
 
     def test_pitch_rate_octaves_and_fns(self):
         table = fns_table()
@@ -189,6 +265,8 @@ class AudioTests(unittest.TestCase):
             for name in audio.DTPK_SOURCES:
                 (source / name).write_bytes(dtpk([(1, 0, 0x54, 2, 0, 2)], b"\x10\x20"))
             (source / "SNDDC0.BIN").write_bytes(dtpk([(1, 0, 0x54, 2, 0, 2)], b"\x10\x20", [(0, -16, 0), (0, -12, 0)]))
+            (source / "SNDDC2.BIN").write_bytes(dtpk([(1, 0, 0x54, 2, 0, 2)], b"\x10\x20",
+                                                     programs=[[split(0, 0, 127, [(127, 2688, 323)])]]))
             output = Path(tmp) / "audio"
             with self.assertRaises(OSError):
                 audio.extract(source, output)
@@ -196,7 +274,7 @@ class AudioTests(unittest.TestCase):
             manifest = audio.extract(source, output)
             self.assertEqual(sum(len(f["sounds"]) for f in manifest["files"]), 10)
             self.assertEqual(json.loads((output / "manifest.json").read_text()), manifest)
-            self.assertEqual(manifest["sound_driver"]["fns_table_offset"], 6)
+            self.assertEqual(manifest["sound_driver"]["fns_table_offset"], 0x7084)
             with wave.open(str(output / "SONG01" / "0000.wav")) as song:
                 self.assertEqual((song.getnchannels(), song.getframerate(), song.getnframes()), (1, 22050, 32))
             first = manifest["files"][2]["sounds"][0]
@@ -207,6 +285,10 @@ class AudioTests(unittest.TestCase):
             self.assertEqual(manifest["files"][3]["sounds"][0]["rate_source"], "nominal")
             with wave.open(str(output / "SNDDC1" / "0000.wav")) as sample:
                 self.assertEqual(sample.getframerate(), 22050)
+            instrument = manifest["files"][4]
+            self.assertEqual((instrument["sounds"][0]["rate_source"], instrument["sounds"][0]["splits"]),
+                             ("program 0 split 0", [[0, 0]]))
+            self.assertEqual(instrument["instruments"][0]["splits"][0]["at_high_key"]["pitch"], 2688 + (323 * 127 >> 8))
             with self.assertRaises(ValueError):
                 audio.extract(source, output)
             (source / "SNDDC8.BIN").write_bytes(b"nope")
