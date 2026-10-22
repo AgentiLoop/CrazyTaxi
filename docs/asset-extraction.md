@@ -861,7 +861,8 @@ Assumptions and limits:
 * Only inputs are stored. Playing a drive back needs the game's start state and
   deterministic car, traffic and customer simulation, which this project doesn't
   have. The tables `setReplayType` selects by city (`0x0C0A3600`/`0x0C0F2CF0`
-  Arcade, `0x0C0B1700`/`0x0C0F2E88` Original) were not decoded.
+  Arcade, `0x0C0B1700`/`0x0C0F2E88` Original) are decoded by the replay-cuts tool
+  below. It gives the car snapshot and camera for each reseed frame.
 * The roles "advertise" (attract-mode demo) and "ending" are read from the file
   names; what triggers the End files wasn't traced.
 
@@ -1090,6 +1091,81 @@ Assumptions and limits:
   listened to.
 * The CourseMode 0 / mini game 15 table has no stop set attached: its destination
   isn't checked.
+## Replay cuts (JSON)
+```sh
+python3 tools/extract_replay_cuts.py local-assets/disc --output local-assets/replay_cuts --customers local-assets/customers
+```
+Runs in under a second. Writes `manifest.json` and an `index.html` with one table
+and top-view map per recorded drive. `--customers` (the customers tool's output)
+is optional; it adds the stop cross-check below.
+The recorded drives hold only inputs. What the game does around them is static
+data in the USA executable:
+* `setReplayType` (`0x0C04ADF8`) sets the frame limit to 5,400. By city mode
+  (`0x0C1EBF2C`) it points `0x0C2A3F68` at a **car snapshot table** (Arcade
+  `0x0C0A3600`, Original `0x0C0B1700`) and `0x0C2A3F6C` at a **point table**
+  (Arcade `0x0C0F2CF0`, Original `0x0C0F2E88`).
+* `replayChangeControl` (`0x0C04B794`) gets type 1 or 2 from the advertise set-up
+  (`0x0C02B504`: Arcade 1, otherwise 2) and type 3 from the ending (`0x0C02CB4A`).
+  Type 1 uses the **cut table** `0x0C0F18F0`, type 2 `0x0C0F1DF0`, and type 3
+  `0x0C0F22F0` (Arcade) or `0x0C0F27F0` (Original). Each table has 40 rows of 32
+  bytes. When the replay frame (`0x0C1EC05C`) reaches a row's frame, the game
+  applies that row and moves on to the next. So only the rows before the first
+  frame ≥ 5,400 are used.
+* The field names come from the game's own debug printer (strings `0x0C0C2218`
+  to `0x0C0C22B4`):
+| Offset | Field |
+| --- | --- |
+| `+0x00` | frame (`frameNo`) |
+| `+0x04` | camera only (`camChgOnly`); 1 = no car or passenger change |
+| `+0x08` | snapshot number (`startCarNo`) |
+| `+0x0C` | camera style |
+| `+0x10` | character |
+| `+0x14` | point number; in the ending also the passenger's destination stop |
+| `+0x18`, `+0x1C` | passed on to `EndPsg_Start`; not traced |
+* Snapshot n is 960 bytes at table + 960 × n. Word 0 is `carType`. The other 956
+  bytes are a player car block, which the row copies over `Car_Data`
+  (`0x0C176E4C`): position at `+0x78`, velocity at `+0x0C`, matrix at `+0xB4`.
+* The camera style and point n go to `SetAdvCamera` (`0x0C028F8E`). Styles below 0
+  or above 4 become 3. Style 0 sets camera mode 0, and −1 sets style 0 and camera
+  mode 6. `ExecAdvCamera` (`0x0C028972`) runs style 1 inline, 2 as chase
+  (`0x0C028ABA`), 3 as random (`0x0C028BD0`) and 4 as fixed (`0x0C028F04`).
+* In the ending (`0x0C1EBF54` ≠ 0), a row whose character is 23 or more calls
+  `EndPsg_Start` (`0x0C070F04`) with (character, `+0x14`, `+0x18`, `+0x1C`). That
+  routine hands `+0x14` to `Psg_Init` (`0x0C06A41E`) as the passenger's
+  destination stop (`+0x140`, see Customers). The tool names that stop with its
+  landmark.
+The tool refuses to run unless 29 pool words, 3 pool halfwords, 42 instructions
+and 5 debug strings along these paths match.
+Results on the USA disc (verified October 22, 2026):
+* **Advertise drives.** Arcade uses 29 rows and Original 33. Every row restores a
+  snapshot. The cameras are 26 random and 3 inline (Arcade) and 28 random and 5
+  inline (Original). The snapshots cycle through `carType` 0–3.
+* **Ending drives.** Each uses 12 rows, every 301 frames from frame 180, all with
+  the fixed camera. Rows 0–10 start an ending passenger. Row 11 (frame 3,491)
+  restores snapshot 59 with no passenger. For example, Arcade row 1 has character
+  47 going to stop 5 ("West side beach").
+* All 86 rows use non-empty snapshots with orthonormal matrices and `+0x00` =
+  `+0x78`.
+Checks:
+* **Random reseeds.** In each advertise table the row frames are exactly the
+  frames where the recorded-drives tool finds the random generator reseeded:
+  29 for Arcade and 33 for Original. The tool fails if they differ. This is what
+  ties type 1 to `RECADVAC` and type 2 to `RECADVDC`.
+* **Stops.** With `--customers`, point n lies inside stop n's area for every stop:
+  33 of 33 Arcade and 29 of 29 Original, at no more than 0.83 of the radius. The
+  game's recorder (`getReplayPassenger`) writes point n from the passenger's
+  spot. Points 33 (Arcade) and 29–33 (Original) are past the last stop.
+* Two runs give identical output.
+Assumptions and limits:
+* In the ending the recorded random values don't follow the generator from frame
+  180 to frame 3,490. These are exactly the 11 passenger rows (0 frames in sync).
+  The tool reports this but didn't trace why.
+* The meanings of `carType`, row `+0x18`/`+0x1C` and of `+0x10` in the advertise
+  tables (23 or 0, which go through a separate non-ending path) were not traced.
+* The snapshot table rows that aren't used (Arcade 39, 52–58 are empty; several
+  Original rows repeat Arcade positions) are not exported row by row; only the
+  rows a cut uses are.
+* Nothing was checked in the running game.
 ## Tests and web build
 
 ```sh
@@ -1097,7 +1173,7 @@ PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -v
 npm run build
 ```
 
-The 158 synthetic tests include 11 disc-extractor tests for nested directories,
+The 168 synthetic tests include 11 disc-extractor tests for nested directories,
 sector padding, partial final sectors, empty files, manifest hashes, no overwrite,
 invalid descriptors, endian disagreement, out-of-track extents, cycles, unsafe
 names, duplicates, multi-extent rejection, malformed records, truncated tracks,
@@ -1160,5 +1236,8 @@ the reply steps, voice ids beyond the AFS file count, audio links and a missing
 WAV, the landmark-path checks, stop names from the city bases, stop pictures (a
 missing PNG and an empty AFS entry), an out-of-range destination and a deterministic full extraction with the
 line-index check and no overwrite.
+The 10 replay-cut tests cover the pool, instruction and debug-string checks, the
+reseed-frame match, row order and the end row, empty and non-car snapshots, stop
+and point ranges, the customer-stop cross-check and a deterministic full extraction.
 No disc image is required.
 The Python tests are invoked separately; `npm test` does not run them.
