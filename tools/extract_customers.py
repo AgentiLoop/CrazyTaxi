@@ -28,10 +28,20 @@ All of it is static data in the USA executable (1ST_READ.BIN), read the way the 
   one of 12 reply steps (USA 0x0C0D2A2C) to 0x0C13D928 and queues it on channel 1: entry
   3 * (byte 0x0C2AA498 - 1) + (counter 0x0C13D898 % 3). What that byte selects (4 values, the
   driver is likely) was not traced.
+* The asked-for stop number is also the destination picture and name. kyakuInitStops fills a RAM
+  table of 24-byte stop entries (USA 0x0C177270) whose word 0 counts from -1, so entry 1 + n holds
+  n; kyakuTaskStart reads the signed byte record +0x18 + slot, takes word 0 of entry 1 + that, and
+  hands it to the passenger set-up (0x0C06A41E), which stores it at passenger +0x140.
+  Chat_TellDestination reads +0x140 as the stop above; when the customer gets in, the passenger
+  code copies +0x140 to 0x0C0E37DC and the kyaku loop calls PutLandmark (0x0C030868) with it, which
+  requests LANDDCn.AFS entry n (gdc_LandmarkReq 0x0C02E7F6, n = Game_No + 1) and draws name
+  base[Game_No][n] (bases 0x0C0EC1A4, the list extract_landmarks.py finds). Each Arcade/Original
+  stop gets that entry and name (Crazy Box stops get none); the entry must hold a picture. With
+  --landmarks the extract_landmarks.py PNG (LANDDCn/NN.png) must exist and the page shows it.
 
 The table addresses are the decomp's (EU) data addresses moved by -0x1200; the tool refuses to run
 unless each is the literal the USA routine loads (POOL), the voice path instructions are the ones
-above (CODE), and the Crazy Box jump table reaches each table's load. Every voice id must be a
+above (CODE, LANDMARK_POOL, LANDMARK_CODE), and the Crazy Box jump table reaches each table's load. Every voice id must be a
 VOICE01.AFS file; with --audio the matching extract_audio.py WAV (VOICE01/NNNN.wav) must exist and
 the page links it. Positions are world coordinates (the space of models/BINCn.glb).
 Stdlib only; no upstream imports.
@@ -50,10 +60,12 @@ try:
     from tools.extract_models import digest
     from tools.extract_collision import f32
     from tools.extract_audio import afs_entries
+    from tools.extract_landmarks import find_name_table
 except ImportError:  # run as a script from the tools directory
     from extract_models import digest
     from extract_collision import f32
     from extract_audio import afs_entries
+    from extract_landmarks import find_name_table
 
 
 LOAD = 0x0C010000
@@ -121,6 +133,41 @@ JUMP = 0x0C0257A4  # braf base of the Crazy Box switch on MiniGame_No - 3 (12 ha
 JUMP_FIRST, JUMP_COUNT = 3, 12
 LONG_STOPS = 1 << 12
 MAX_POINTS = 1 << 10
+# Destination stop -> passenger +0x140 -> PutLandmark picture and name (see the docstring).
+STOP_TABLE = 0x0C177270  # 24-byte RAM entries, word 0 = stop number, first entry -1 (no stop)
+PASSENGER_DESTINATION = 0x140
+LANDMARK_INDEX = 0x0C0E37DC
+PUT_LANDMARK = 0x0C030868
+SET_LANDMARK = 0x0C030802
+LANDMARK_REQUEST = 0x0C02E7F6
+LANDMARK_NAME_BASES = 0x0C0EC1A4
+LANDMARK_FILES = ("LANDDC1.AFS", "LANDDC2.AFS")  # by Game_No
+LANDMARK_PNG = "%s/%02d.png"  # extract_landmarks.py's name for LANDDCn.AFS entry i
+LANDMARK_POOL = {0x0C0256A4: STOP_TABLE, 0x0C02483C: STOP_TABLE, 0x0C024844: 0x0C06A41E,
+                 0x0C06A4F2: PASSENGER_DESTINATION, 0x0C06050E: PASSENGER_DESTINATION,
+                 0x0C06D00C: PASSENGER_DESTINATION, 0x0C06D02C: LANDMARK_INDEX, 0x0C06D030: SET_LANDMARK,
+                 0x0C026524: LANDMARK_INDEX, 0x0C026528: PUT_LANDMARK, 0x0C03096C: LANDMARK_REQUEST,
+                 0x0C030B90: LANDMARK_NAME_BASES}
+LANDMARK_HALFWORDS = {0x0C06A4F2, 0x0C06050E, 0x0C06D00C}
+LANDMARK_CODE = {0x0C025668: 0xEAFF,  # kyakuInitStops: mov #-1,r10        first stop number
+                 0x0C0256B4: 0x2EA2,  # mov.l r10,@r14                     entry word 0 = number
+                 0x0C0256EE: 0x7A01,  # add #1,r10
+                 0x0C0256F0: 0x7E18,  # add #24,r14                        24-byte entries
+                 0x0C02476E: 0x7318,  # kyakuTaskStart: add #24,r3         record +0x18 ...
+                 0x0C024770: 0x33CC,  # add r12,r3                         ... + chosen slot
+                 0x0C024772: 0x6230,  # mov.b @r3,r2                       signed destination stop
+                 0x0C024784: 0x7218,  # add #24,r2                         skip the -1 entry
+                 0x0C024792: 0x6662,  # mov.l @r6,r6                       r6 = stop number
+                 0x0C06A432: 0x1F61,  # 0x0C06A41E: mov.l r6,@(4,r15)
+                 0x0C06A4A6: 0x52F1,  # mov.l @(4,r15),r2
+                 0x0C06A4AA: 0x0E26,  # mov.l r2,@(r0,r14)                 passenger +0x140
+                 0x0C0604B8: 0x004E,  # Chat_TellDestination: mov.l @(r0,r4),r0  voice row
+                 0x0C06CF5C: 0x03EE,  # mov.l @(r0,r14),r3                 passenger +0x140 ...
+                 0x0C06CF5E: 0x2132,  # mov.l r3,@r1                       ... -> 0x0C0E37DC
+                 0x0C02645A: 0x6422,  # kyaku main: mov.l @r2,r4           PutLandmark(0x0C0E37DC)
+                 0x0C030890: 0x6B43,  # PutLandmark: mov r4,r11
+                 0x0C0308EC: 0x64B3}  # mov r11,r4                         gdc_LandmarkReq(picture)
+
 
 
 class Executable:
@@ -152,6 +199,24 @@ def check_pool(exe):
     name = VOICE_AFS.encode() + b"\0"
     if exe.data[VOICE_AFS_NAME - LOAD:VOICE_AFS_NAME - LOAD + len(name)] != name:
         raise ValueError("partition 2 name at 0x%08X is not %s" % (VOICE_AFS_NAME, VOICE_AFS))
+
+
+def check_landmark_path(exe):
+    for address, value in sorted(LANDMARK_POOL.items()):
+        got = exe.word(address, "<H") if address in LANDMARK_HALFWORDS else exe.word(address)
+        if got != value:
+            raise ValueError("pool word 0x%08X is 0x%X, expected 0x%X" % (address, got, value))
+    for address, op in sorted(LANDMARK_CODE.items()):
+        if exe.word(address, "<H") != op:
+            raise ValueError("instruction at 0x%08X is not 0x%04X" % (address, op))
+
+
+def landmark_names(exe):
+    """(name list, [first name index per Game_No]) from extract_landmarks' shape search."""
+    start, pair, names, bases = find_name_table(exe.data, len(LANDMARK_FILES))
+    if pair != LANDMARK_NAME_BASES:
+        raise ValueError("landmark name bases at 0x%08X, PutLandmark loads 0x%08X" % (pair, LANDMARK_NAME_BASES))
+    return names, [(b - start) // 4 for b in bases]
 
 
 def read_replies(exe):
@@ -258,7 +323,7 @@ def svg_map(stops, customers):
     return "".join(out)
 
 
-def extract(source, output, courses=None, audio=None):
+def extract(source, output, courses=None, audio=None, landmarks=None):
     source, output = Path(source).resolve(), Path(output).absolute()
     if output.exists():
         raise ValueError("output already exists")
@@ -314,6 +379,35 @@ def extract(source, output, courses=None, audio=None):
             for s, row in zip(stops, rows):
                 s["voices"] = row
         stop_list.append(entry)
+    check_landmark_path(exe)
+    names, firsts = landmark_names(exe)
+    archives = [(source / name).read_bytes() for name in LANDMARK_FILES]
+    for e in stop_list:
+        game = e["game_no"]
+        if game >= len(LANDMARK_FILES):
+            continue
+        listing = afs_entries(archives[game])
+        for s in e["stops"]:
+            i, n = s["index"], firsts[game] + s["index"]
+            if i >= len(listing) or not any(archives[game][listing[i][0]:listing[i][0] + listing[i][1]]):
+                raise ValueError("%s has no picture for stop %d" % (LANDMARK_FILES[game], i))
+            if n >= len(names):
+                raise ValueError("no landmark name for Game_No %d stop %d" % (game, i))
+            s["landmark"] = dict(file=LANDMARK_FILES[game], entry=i, name=names[n])
+    same = [s for s, row in sorted(ORIGINAL_ROWS.items()) if max(firsts[1] + s, firsts[0] + row) < len(names)
+            and names[firsts[1] + s] == names[firsts[0] + row]]
+    checks.update(landmark_names=len(names), stops_named=sum("landmark" in s for e in stop_list for s in e["stops"]),
+                  original_rows_with_the_arcade_stop_name=[len(same), len(ORIGINAL_ROWS)])
+    picture = None
+    if landmarks is not None:
+        missing = [s for e in stop_list for s in e["stops"] if "landmark" in s and not (Path(landmarks) / (
+            LANDMARK_PNG % (s["landmark"]["file"].split(".")[0], s["landmark"]["entry"]))).is_file()]
+        if missing:
+            raise ValueError("landmarks folder lacks the picture for %s entry %d"
+                             % (missing[0]["landmark"]["file"], missing[0]["landmark"]["entry"]))
+        pictures = os.path.relpath(Path(landmarks).absolute(), output)
+        picture = lambda m: '<img src="%s" width="64" height="64">' % html.escape(
+            Path(pictures, LANDMARK_PNG % (m["file"].split(".")[0], m["entry"])).as_posix())
     replies = read_replies(exe)
     voice_data = (source / VOICE_AFS).read_bytes()
     clips = len(afs_entries(voice_data))
@@ -331,14 +425,20 @@ def extract(source, output, courses=None, audio=None):
     checks.update(voice_ids=len(used), voice_afs_files=clips)
     manifest = dict(schema=2, load_address=LOAD, record_size=RECORD,
                     sources={"1ST_READ.BIN": dict(size=len(data), sha256=digest(data)),
-                             VOICE_AFS: dict(size=len(voice_data), sha256=digest(voice_data))},
+                             VOICE_AFS: dict(size=len(voice_data), sha256=digest(voice_data)),
+                             **{name: dict(size=len(blob), sha256=digest(blob))
+                                for name, blob in zip(LANDMARK_FILES, archives)}},
                     addresses=dict(stop_counts=STOP_COUNTS, stop_areas=STOP_AREAS, kind_to_character=KIND_TO_CHARACTER,
                                    arcade_voices=ARCADE_VOICES, generic_voices=GENERIC_VOICES, jump_table=JUMP,
-                                   replies=REPLIES),
+                                   replies=REPLIES, stop_table=STOP_TABLE, landmark_index=LANDMARK_INDEX,
+                                   put_landmark=PUT_LANDMARK, landmark_name_bases=LANDMARK_NAME_BASES),
                     destination_rule="kyakuTaskStart asks for destinations[(frame counter / 600) % 3]",
                     voice_rule="a voice id is %s file n (extract_audio.py %s); the destination line plays on "
                                "voice channel 2 from frame 2, the reply on channel 1 from its start frame"
                                % (VOICE_AFS, VOICE_FILE),
+                    landmark_rule="the destination stop number is passenger +0x140; PutLandmark shows %s entry n "
+                                  "(extract_landmarks.py %s) and name base[Game_No][n]" % ("/".join(LANDMARK_FILES),
+                                                                                         LANDMARK_PNG),
                     kind_to_character=kinds, generic_voices=generic, original_voice_rows=ORIGINAL_ROWS,
                     replies=replies, checks=checks, stop_sets=stop_list, customer_sets=sets, files=[])
     gallery = ['<!doctype html><meta charset="utf-8"><title>Crazy Taxi customers</title>',
@@ -350,8 +450,9 @@ def extract(source, output, courses=None, audio=None):
     for e in stop_list:
         if e["game_no"] < 2:
             gallery.append("<h2>%s stop voices</h2><table>" % ("Arcade", "Original")[e["game_no"]])
-            gallery.extend("<tr><td>stop %d</td><td>%s</td></tr>" % (s["index"], "generic" if not s["voices"] else
-                           " ".join(show(v) for v in s["voices"])) for s in e["stops"])
+            gallery.extend("<tr><td>stop %d</td><td>%s%s</td><td>%s</td></tr>" % (
+                s["index"], picture(s["landmark"]) if picture else "", html.escape(s["landmark"]["name"]),
+                "generic" if not s["voices"] else " ".join(show(v) for v in s["voices"])) for s in e["stops"])
             gallery.append("</table>")
     gallery.append("<h2>Generic destination voices</h2><table>%s</table>" % "".join(
         "<tr><td>row %d</td><td>%s</td></tr>" % (r, " ".join(show(v) for v in row)) for r, row in enumerate(generic)))
@@ -387,9 +488,10 @@ def main():
     parser.add_argument("--output", type=Path, required=True, help="new local output directory")
     parser.add_argument("--courses", type=Path, help="extract_courses.py output, for the line-index check")
     parser.add_argument("--audio", type=Path, help="extract_audio.py output, to link the voice WAVs")
+    parser.add_argument("--landmarks", type=Path, help="extract_landmarks.py output, to show the stop pictures")
     args = parser.parse_args()
     try:
-        manifest = extract(args.source, args.output, args.courses, args.audio)
+        manifest = extract(args.source, args.output, args.courses, args.audio, args.landmarks)
     except (ValueError, OSError, KeyError) as error:
         parser.exit(1, "error: %s\n" % error)
     print("Wrote %d customer tables (%d customers, %d destinations) and %d stop sets into %s"
