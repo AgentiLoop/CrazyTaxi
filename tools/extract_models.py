@@ -282,11 +282,14 @@ class Gltf(object):
             self.material_ids[key] = len(self.doc["materials"]) - 1
         return self.material_ids[key]
 
+    def material_key(self, record):
+        return material_key(record, self.textures)
+
     def mesh(self, name, model):
         """Add a mesh (one primitive per material) for a parsed model; returns (mesh index, triangle count)."""
         groups = {}
         for record in model["records"]:
-            key = material_key(record, self.textures)
+            key = self.material_key(record)
             tris = groups.setdefault(key, [])
             for strip in record["strips"]:
                 tris.extend(facing(t, model["vertices"]) for t in triangles(strip))

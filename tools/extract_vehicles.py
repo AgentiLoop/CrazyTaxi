@@ -27,9 +27,18 @@ the USA disassembly of putCarModel and putPlayerCar):
   origin; wheels set[0..3] at the +0x6C positions (the game's suspension sets the height;
   the table's height is used). The other set entries go to an "alternates" scene.
 
-Paint is not applied: the game tints some strips with the type's colour at draw time, and
-the strip rule is not verified. Textures are referenced from extract_textures.py output.
-Stdlib only; no upstream imports.
+Paint (USA putCarModel and the library record drawer at 0x0C080E20): putCarModel calls
+SetFadeColorBaseMulti(r, g, b) with the car's colour from the table above, draws only the
+body model (+0x00 or +0x04), then ResetFadeColor. The record drawer multiplies the face
+colour of every record whose PCW colour type is 2 (intensity mode 1) by the fade base;
+colour type 3 records send no face colour, so the PowerVR keeps the last one. Every body
+record that shows it uses the TSP decal-alpha shading (2): pixel = texture RGB * texture A +
+face RGB * (1 - texture A), alpha = face A. Decal-alpha textures are baked with that rule
+and embedded: unpainted with the record's face colour, body records with face * paint. The
+default body uses the type's first colour-list entry (random & 31 == 0); every distinct
+list colour is a KHR_materials_variants variant "paint_NN". Lighting, the offset colour
+and the fade colour's runtime changes are not applied. Other textures are referenced from
+extract_textures.py output. Stdlib only; no upstream imports.
 """
 import argparse
 import html
@@ -38,13 +47,16 @@ from pathlib import Path
 import shutil
 import struct
 import tempfile
+import zlib
 
 try:
-    from tools.extract_models import Gltf, digest, find_models, parse_model
+    from tools.extract_models import Gltf, digest, find_models, material_key, parse_model
     from tools.extract_characters import LOAD, find_base, words
+    from tools.extract_textures import png_bytes
 except ImportError:  # run as a script from the tools directory
-    from extract_models import Gltf, digest, find_models, parse_model
+    from extract_models import Gltf, digest, find_models, material_key, parse_model
     from extract_characters import LOAD, find_base, words
+    from extract_textures import png_bytes
 
 RECORD = 0xA8
 RECORD_WORDS = RECORD // 4
@@ -53,6 +65,9 @@ MODEL_WORDS = list(range(0, 6)) + list(range(6, 22)) + list(range(22, 28))
 CAB_SETS = 5
 CAB_BODY_DROP = 1.2  # putPlayerCar: nlTranslate(0, -1.2, 0) before the body (USA 0x0C02045C)
 CAB_SLOTS = {0: "wheel_0", 1: "wheel_1", 2: "wheel_2", 3: "wheel_3", 4: "body", 5: "rear_5", 6: "rear_6"}
+DECAL_ALPHA = 2  # TSP shading instruction (bits 6-7)
+INTENSITY_1, INTENSITY_2 = 2, 3  # PCW colour type (bits 4-5)
+VARIANTS = "KHR_materials_variants"
 
 
 def f32(word):
@@ -185,20 +200,116 @@ def cab_sets(executable, table, sets):
     return result
 
 
+def read_png(path):
+    """(width, height, RGBA bytes) of a PNG written by extract_textures.png_bytes (8-bit RGBA, unfiltered rows)."""
+    data = Path(path).read_bytes()
+    if data[:8] != b"\x89PNG\r\n\x1a\n":
+        raise ValueError("%s is not a PNG" % path)
+    p, head, idat = 8, None, b""
+    while p + 8 <= len(data):
+        size, tag = struct.unpack_from(">I4s", data, p)
+        if tag == b"IHDR":
+            head = struct.unpack(">IIBBBBB", data[p + 8:p + 21])
+        elif tag == b"IDAT":
+            idat += data[p + 8:p + 8 + size]
+        p += 12 + size
+    if head is None or head[2:] != (8, 6, 0, 0, 0):
+        raise ValueError("%s is not an 8-bit RGBA PNG" % path)
+    width, height = head[:2]
+    rows, stride = zlib.decompress(idat), width * 4 + 1
+    if len(rows) != stride * height or any(rows[y * stride] for y in range(height)):
+        raise ValueError("%s uses PNG row filters" % path)
+    return width, height, b"".join(rows[y * stride + 1:(y + 1) * stride] for y in range(height))
+
+
+def decal_alpha(rgba, colour):
+    """PowerVR decal-alpha shading: RGB = texture RGB * texture A + colour RGB * (1 - texture A), A = colour A."""
+    level = [min(255, max(0, int(round(255 * c)))) for c in colour]
+    table = {}
+    for k in range(0, len(rgba), 4):
+        pixel = rgba[k:k + 4]
+        if pixel not in table:
+            a = pixel[3]
+            table[pixel] = bytes([int(round((pixel[n] * a + level[n] * (255 - a)) / 255.0)) for n in range(3)]
+                                 + [level[3]])
+    return b"".join(table[rgba[k:k + 4]] for k in range(0, len(rgba), 4))
+
+
+def mark_decals(model, textures):
+    """Store the (A, R, G, B) face colour the PowerVR shows as "decal_face" on every decal-alpha
+    textured record (None on the others); returns how many were marked.
+
+    Colour type 3 (intensity mode 2) records carry no face colour to the PowerVR (the record
+    drawer skips it), so they show the last colour type 2 record's face colour."""
+    last, marked = None, 0
+    for r in model["records"]:
+        kind = r["pcw"] >> 4 & 3
+        if kind == INTENSITY_1:
+            last = tuple(r["face"])
+        r["decal_face"] = None
+        if r["tsp"] >> 6 & 3 != DECAL_ALPHA or not 0 <= r["texture"] < len(textures):
+            continue
+        if kind not in (INTENSITY_1, INTENSITY_2) or last is None:
+            raise ValueError("decal-alpha record without a face colour")
+        r["decal_face"] = last
+        marked += 1
+    return marked
+
+
+def tint(face, paint):
+    """RGBA of an (A, R, G, B) face colour times a fade-base RGB."""
+    return tuple(round(face[1 + n] * paint[n], 6) for n in range(3)) + (round(face[0], 6),)
+
+
+def prune(doc):
+    """Drop materials, textures and images nothing refers to any more, renumbering references."""
+    primitives = [p for m in doc["meshes"] for p in m["primitives"]]
+    mappings = [x for p in primitives for x in p.get("extensions", {}).get(VARIANTS, {}).get("mappings", [])]
+    keep = sorted(set(p["material"] for p in primitives) | set(x["material"] for x in mappings))
+    renumber = dict((old, new) for new, old in enumerate(keep))
+    doc["materials"] = [doc["materials"][k] for k in keep]
+    for item in primitives + mappings:
+        item["material"] = renumber[item["material"]]
+    refs = [m["pbrMetallicRoughness"]["baseColorTexture"] for m in doc["materials"]
+            if "baseColorTexture" in m["pbrMetallicRoughness"]]
+    keep = sorted(set(r["index"] for r in refs))
+    renumber = dict((old, new) for new, old in enumerate(keep))
+    doc["textures"] = [doc["textures"][k] for k in keep]
+    for r in refs:
+        r["index"] = renumber[r["index"]]
+    keep = sorted(set(t["source"] for t in doc["textures"]))
+    renumber = dict((old, new) for new, old in enumerate(keep))
+    doc["images"] = [doc["images"][k] for k in keep]
+    for t in doc["textures"]:
+        t["source"] = renumber[t["source"]]
+
+
+class VehicleGltf(Gltf):
+    """Gltf whose material keys end with the record's decal face colour (None when not decal alpha)."""
+
+    def material_key(self, record):
+        return material_key(record, self.textures) + (record.get("decal_face"),)
+
+
 class Builder(object):
     """One vehicle GLB: named scenes, one node per placed model, meshes shared by address."""
 
-    def __init__(self, bank_name, bank, root, data, base, scenes):
-        self.gltf = Gltf(bank_name, bank, root)
+    def __init__(self, bank_name, bank, root, data, base, scenes, texture_dir=None):
+        self.gltf = VehicleGltf(bank_name, bank, root)
         self.gltf.doc["scenes"] = [dict(name=s, nodes=[]) for s in scenes]
         self.data, self.base, self.meshes, self.triangles, self.placed = data, base, {}, 0, []
+        self.texture_dir, self.bodies, self.images = texture_dir, set(), {}
 
     def put(self, scene, label, address, translation=None):
         offset = address - self.base
         if address not in self.meshes:
-            mesh, tris = self.gltf.mesh("%s_%06x" % (label, offset), parse_model(self.data, offset))
+            model = parse_model(self.data, offset)
+            mark_decals(model, self.gltf.textures)
+            mesh, tris = self.gltf.mesh("%s_%06x" % (label, offset), model)
             self.meshes[address] = mesh
             self.triangles += tris
+        if label == "body" and self.meshes[address] is not None:
+            self.bodies.add(self.meshes[address])
         item = dict(name="%s_%06x" % (label, offset), extras=dict(offset=offset))
         if self.meshes[address] is not None:
             item["mesh"] = self.meshes[address]
@@ -209,6 +320,63 @@ class Builder(object):
         self.gltf.doc["scenes"][scene]["nodes"].append(index)
         self.placed.append(dict(scene=self.gltf.doc["scenes"][scene]["name"], part=label, offset=offset,
                                 translation=item.get("translation", [0.0, 0.0, 0.0])))
+
+    def baked_texture(self, number, colour, sampler):
+        """Texture index of an embedded PNG: texture `number` baked with decal alpha over `colour`."""
+        doc = self.gltf.doc
+        if (number, colour) not in self.images:
+            width, height, rgba = read_png(self.texture_dir / self.gltf.textures[number]["png"])
+            payload = png_bytes(width, height, decal_alpha(rgba, colour))
+            while len(self.gltf.blob) % 4:
+                self.gltf.blob.append(0)
+            doc["bufferViews"].append(dict(buffer=0, byteOffset=len(self.gltf.blob), byteLength=len(payload)))
+            self.gltf.blob.extend(payload)
+            doc.setdefault("images", []).append(dict(bufferView=len(doc["bufferViews"]) - 1, mimeType="image/png"))
+            self.images[(number, colour)] = len(doc["images"]) - 1
+        doc["textures"].append(dict(source=self.images[(number, colour)], sampler=sampler))
+        return len(doc["textures"]) - 1
+
+    def paint(self, paints=(), default=0):
+        """Bake every decal-alpha material: primitives of body meshes get paints[default] (an RGB
+        fade base) and one KHR_materials_variants variant per paint; others keep the face colour."""
+        doc = self.gltf.doc
+        keys = dict((v, k) for k, v in self.gltf.material_ids.items())
+        baked, decals = {}, []
+        for mesh, item in enumerate(doc["meshes"]):
+            decals += [(mesh, p) for p in item["primitives"] if keys[p["material"]][-1] is not None]
+
+        def material(key, colour):
+            if (key, colour) not in baked:
+                item = json.loads(json.dumps(doc["materials"][self.gltf.material_ids[key]]))
+                pbr = item["pbrMetallicRoughness"]
+                sampler = doc["textures"][pbr["baseColorTexture"]["index"]]["sampler"]
+                pbr["baseColorTexture"] = dict(index=self.baked_texture(key[0], colour, sampler))
+                item["name"] += "_decal_%02x%02x%02x" % tuple(int(round(255 * c)) for c in colour[:3])
+                item["extras"]["decal_alpha_colour"] = list(colour)
+                doc["materials"].append(item)
+                baked[(key, colour)] = len(doc["materials"]) - 1
+            return baked[(key, colour)]
+
+        if paints and any(mesh in self.bodies for mesh, _ in decals):
+            doc.setdefault("extensionsUsed", []).append(VARIANTS)
+            doc.setdefault("extensions", {})[VARIANTS] = dict(variants=[dict(name=name) for name, _ in paints])
+        painted = 0
+        for mesh, primitive in decals:
+            key = keys[primitive["material"]]
+            if not (paints and mesh in self.bodies):
+                primitive["material"] = material(key, tint(key[-1], (1.0, 1.0, 1.0)))
+                continue
+            choices = [material(key, tint(key[-1], rgb)) for _, rgb in paints]
+            primitive["material"] = choices[default]
+            mapping = {}
+            for variant, m in enumerate(choices):
+                mapping.setdefault(m, []).append(variant)
+            primitive["extensions"] = {VARIANTS: dict(mappings=[dict(material=m, variants=v)
+                                                                for m, v in sorted(mapping.items())])}
+            painted += 1
+        if decals:
+            prune(doc)
+        return dict(decal_primitives=len(decals), painted_primitives=painted, baked_images=len(self.images))
 
     def glb(self):
         self.gltf.doc["scenes"] = [s for s in self.gltf.doc["scenes"] if s["nodes"]]
@@ -290,14 +458,19 @@ def extract(source, textures, output):
         for t in traffic["types"]:
             data, base, _ = files[t["source"]]
             bank = t["source"].replace("POLDC", "TEXDC")
-            builder = Builder(bank, banks[bank], root, data, base, ("near", "far", "lamps"))
+            builder = Builder(bank, banks[bank], root, data, base, ("near", "far", "lamps"), textures)
             for scene, label, address, translation in traffic_parts(t["words"], t["axles"]):
                 builder.put(scene, label, address, translation)
+            variants = sorted(set(t["colour_indices"] or []))
+            default = t["colour_indices"][0] if variants else None
+            paint = builder.paint([("paint_%02d" % c, traffic["colours"][c]) for c in variants],
+                                  variants.index(default) if variants else 0)
             r = t["words"]
             entry = dict(index=t["index"], name=t["name"], source=t["source"], texture_bank=bank,
                          axles=[[round(v, 6) for v in a] for a in t["axles"]],
                          value_94=round(f32(r[37]), 6), value_98=round(f32(r[38]), 6), value_a0=r[40],
-                         colour_indices=t["colour_indices"], parts=builder.placed)
+                         colour_indices=t["colour_indices"], paint=dict(paint, default=default, variants=variants),
+                         parts=builder.placed)
             relative = "traffic/type_%02d_%s.glb" % (t["index"], t["name"].lower() or "unnamed")
             blob = builder.glb()
             (staging / relative).write_bytes(blob)
@@ -314,15 +487,16 @@ def extract(source, textures, output):
         for k, models in enumerate(sets):
             wheels = list(struct.unpack_from("<15f", executable, wheel_pointers[k] - LOAD))
             points = list(struct.unpack_from("<12f", executable, point_pointers[k] - LOAD))
-            builder = Builder("TEXDC0.BIN", banks["TEXDC0.BIN"], root, data, base, ("car", "alternates"))
+            builder = Builder("TEXDC0.BIN", banks["TEXDC0.BIN"], root, data, base, ("car", "alternates"), textures)
             for scene, label, address, translation in cab_parts(models, wheels):
                 builder.put(scene, label, address, translation)
+            paint = builder.paint()
             relative = "cabs/cab_%d.glb" % k
             blob = builder.glb()
             (staging / relative).write_bytes(blob)
             manifest["cabs"].append(dict(index=k, name=cabbies[k], set=set_pointers[k], models=models,
                                          wheel_positions=[round(v, 6) for v in wheels],
-                                         points_70=[round(v, 6) for v in points], parts=builder.placed,
+                                         points_70=[round(v, 6) for v in points], paint=paint, parts=builder.placed,
                                          glb=relative, glb_sha256=digest(blob), triangles=builder.triangles))
             gallery.append('<tr><td>%d</td><td><a href="%s">%s</a></td><td>%s</td><td>%d triangles</td></tr>'
                            % (k, relative, relative, cabbies[k], builder.triangles))
