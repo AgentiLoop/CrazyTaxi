@@ -150,8 +150,23 @@ player page. The run takes about 10 seconds.
   entries as PCM16 and skips entries above 16 MB. Proof that the register
   reading is right: the entries run back to back, and every LEA is within 3
   samples of the length decoded in that format. ADPCM is Yamaha AICA (low nibble
-  first, step 127). A pack does not store a sample rate (the program's pitch sets
-  it), so each WAV uses a nominal 22,050 Hz.
+  first, step 127). The pack's sample table holds no rate; see the playback
+  definitions below.
+* **DTPK playback rate**: the header word `+0x30` points to the playback
+  definitions: last index at chunk `+0x10` (u16), then 64-byte entries from
+  `+0x50` (`+0` index, `+2` sample, `+10` signed semitones, `+11` signed 1/64
+  semitones, `+0x1C` random tune). The disc's sound driver `AICADRV.BIN`
+  (AM2/AICAsoundDrv 990623 Ver1.70, ARM7, disassembled with `llvm-objdump
+  --triple=armv4t`) computes the pitch in note-on routine `0x3B54`. The pitch
+  is `byte10 << 8 + byte11 << 2` in 1/256 semitones. The voice's key offset,
+  channel transpose/detune, bend and random tune are added to it. Routine
+  `0x2E68` then splits it into `OCT = pitch // 3072` and FNS = the driver's
+  768-entry table (at file offset `0x7084`, exactly
+  `round(1024 * (2 ** (i / 768) - 1))`) at index `(pitch mod 3072) >> 2`. The
+  rate is `44100 * 2 ** OCT * (1024 + FNS) / 1024`. Each sample's WAV uses the
+  rate of the first definition that plays it. The manifest's `playbacks` list
+  holds every definition with its pitch register and exact rate. Samples no
+  definition uses keep a nominal 22,050 Hz.
 
 Verified October 22, 2026 on the USA files: **798 sounds**. They are SONG01 9
 stereo 44.1 kHz tracks (621.8 s; tracks 0 and 8 loop), VOICE01 699 mono 22.05 kHz
@@ -164,8 +179,27 @@ independent checks against ffmpeg 8 passed:
 * All 38 ADPCM samples match ffmpeg's `adpcm_aica` decoder sample-for-sample.
 
 All 798 WAVs open in `ffprobe` without errors. Clamping to 16 bits affects 718
-music samples and 215 voice samples. Not yet done: DTPK programs/sequences (pitch,
-envelopes and which sample each sound effect plays).
+music samples and 215 voice samples.
+
+DTPK playback rates (USA): 96 definitions (SNDDC0 52, SNDDC1 20, SNDDC5 4,
+SNDDC6 7, SNDDC7 8, SNDDC8 5; SNDDC2-3 have none). Every chunk ends exactly
+where the next chunk or the pack's end begins. 82 of the 90 samples get a
+definition rate: 60 play at 22,050 Hz, and others range from 10,406 Hz to
+44,100 Hz (5 at 44,100). 7 samples are played by definitions with different
+rates; their WAV uses the first one. 8 samples use the nominal rate: SNDDC2's 2,
+SNDDC3's 3 and SNDDC1 samples 1, 2 and 19. The decoded PCM is unchanged; only
+the WAV rate differs.
+
+Limits:
+
+* The rate is the definition's own pitch. Key offset (`note - 60`, used only when
+  the channel enables it), channel transpose/detune and bend are taken as zero.
+  Their values come from the sequence data, which isn't decoded.
+* Random tune is listed but not applied.
+* SNDDC2-3 (no playback chunk; likely instrument/sequence banks) and the
+  sequences, envelopes, filters and pan aren't decoded.
+* Sample-entry word `+8` (`0x80` on SNDDC1 samples 3 and 4) is unexplained. The
+  driver's sample lookup (`0x3C70`) reads only `+0`, `+4` and `+6`.
 
 ## Sprite conversion (PNG)
 
