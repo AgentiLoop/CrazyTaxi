@@ -710,8 +710,9 @@ Checks and results:
 
 Assumptions and limits:
 
-* Which entries a run actually requests (the customer's destination field) was
-  not traced, so the names are what the formula gives, not proven per picture.
+* The customers tool traces which entry a run requests: the customer's destination
+  stop number n (Arcade 0–32, Original 0–28). Entries outside those ranges are not
+  requested by customers; whether anything else uses them wasn't traced.
   The two city ranges overlap at name 33 ("Big Hills Park"), and the formula
   gives LANDDC1 34 and 36–39 names from the Original part of the list.
 * The AFS entry number is taken to be the picture index passed to the loader.
@@ -979,14 +980,15 @@ Assumptions and limits:
 
 ```sh
 python3 tools/extract_customers.py local-assets/disc --output local-assets/customers \
-  --courses local-assets/courses --audio local-assets/audio
+  --courses local-assets/courses --audio local-assets/audio --landmarks local-assets/landmarks
 ```
 
-Runs in under a second and reads `1ST_READ.BIN` and `VOICE01.AFS` (`--courses` is
-optional and only feeds one check; `--audio`, the audio tool's output, is optional
-and only adds links). Writes `manifest.json` and an `index.html` with the voice ids
-per stop, the generic rows and the replies (linked to `VOICE01/NNNN.wav` when
-`--audio` is given), then one top-view map per customer table: green stop areas
+Runs in under a second and reads `1ST_READ.BIN`, `VOICE01.AFS` and `LANDDC1-2.AFS`
+(`--courses` is optional and only feeds one check; `--audio` and `--landmarks`, the
+audio and landmarks tools' output, are optional and only add links). Writes
+`manifest.json` and an `index.html` with each stop's name (and picture with
+`--landmarks`) and voice ids, the generic rows and the replies (linked to
+`VOICE01/NNNN.wav` when `--audio` is given), then one top-view map per customer table: green stop areas
 with their numbers, yellow customers.
 
 Everything is static data in the executable, read the way these routines read it
@@ -1028,14 +1030,29 @@ Everything is static data in the executable, read the way these routines read it
 * Before the destination, the same routine queues a reply step on channel 1: entry
   `3 × (byte 0x0C2AA498 − 1) + (counter 0x0C13D898 mod 3)` of a 12-step table at
   `0x0C0D2A2C` (`replies`: group, variant, voice, start frame, length).
+* The asked-for stop number is also the destination picture and name (`landmark`
+  per stop: file, entry, name). `kyakuInitStops` fills a RAM table of 24-byte stop
+  entries at `0x0C177270` whose word 0 counts from −1, so entry 1 + n holds n.
+  `kyakuTaskStart` reads the signed byte at record `+0x18 + slot`, takes word 0 of
+  entry 1 + that byte and passes it to the passenger set-up (`0x0C06A41E`), which
+  stores it at passenger `+0x140`. `Chat_TellDestination` reads `+0x140` as the
+  stop above. When the customer gets in, the passenger code copies `+0x140` to
+  `0x0C0E37DC`, and the kyaku loop calls `PutLandmark` (`0x0C030868`) with it.
+  `PutLandmark` requests that picture (`gdc_LandmarkReq`, `0x0C02E7F6`;
+  `LANDDC1.AFS` in the Arcade city, `LANDDC2.AFS` in the Original city) and draws
+  name `base[Game_No][n]` (bases at `0x0C0EC1A4`, the list the landmarks tool
+  finds). Crazy Box stops get no landmark.
 
 The table addresses are the decomp's data addresses moved by −0x1200. The tool
 refuses to run unless each is the word the USA routine loads from its literal pool,
 the voice-path instructions are the expected ones (start frame, channels, partition
 2 in both the start and the load call, step word 0 as the id) and the partition name
-is `VOICE01.AFS`, each Crazy Box case label loads its table, and the 17 tables lie
+is `VOICE01.AFS`, the 18 landmark-path instructions and 12 pool words above match,
+each Crazy Box case label loads its table, and the 17 tables lie
 back to back (`0x0C0D9E08`–`0x0C0E37A0`). Every voice id must be below the
-`VOICE01.AFS` file count, and with `--audio` its WAV must exist.
+`VOICE01.AFS` file count, and with `--audio` its WAV must exist. Every Arcade and
+Original stop must have a non-empty `LANDDCn.AFS` entry and a name, and with
+`--landmarks` its `LANDDCn/NN.png` must exist.
 
 Results on the USA files (verified October 22, 2026):
 
@@ -1052,10 +1069,20 @@ Results on the USA files (verified October 22, 2026):
 * 154 distinct voice ids (stop rows, generic rows and replies), all below
   `VOICE01.AFS`'s 699 files. The 12 replies all start at frame 75 with no length
   limit: groups 0–3 use files 27/2/28, 68/46/69, 128/151/129 and 112/87/113.
+* All 62 stops (Arcade 33, Original 29) are named; they use all 62 names
+  (Arcade 0–32, Original 33–61) and only non-empty pictures (`LANDDC1` 0–32,
+  `LANDDC2` 0–28). For example, Arcade stop 0 is "Cable car stop TOP" and
+  Original stop 28 "Camping Village".
+* Independent cross-check: of the 16 Original stops that reuse an Arcade voice row,
+  8 have the same name as that Arcade stop (Pizza Hut, FILA, Levi's, Tower Records,
+  KFC, Police station, Cafeteria, Fire station). The others are the same kind of
+  place: banks, parks, hotels and five stations sharing the "R.B.station" row.
 * Two runs give identical output.
 
 Assumptions and limits:
 
+* `PutLandmark` only draws when `0x0C1EBF54` and `0x0C1EBF58` are 1; what those
+  flags are wasn't traced. No picture or name was checked in the running game.
 * "Reverse" is only the decomp's variable name; what the player sees for it wasn't
   checked.
 * Who speaks each of the five slots wasn't traced, and what byte `0x0C2AA498`
@@ -1063,8 +1090,6 @@ Assumptions and limits:
   listened to.
 * The CourseMode 0 / mini game 15 table has no stop set attached: its destination
   isn't checked.
-* Stop names are not in this data; the Arcade/Original destination pictures
-  (landmarks tool) may correspond but weren't matched.
 ## Tests and web build
 
 ```sh
@@ -1072,7 +1097,7 @@ PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -v
 npm run build
 ```
 
-The 155 synthetic tests include 11 disc-extractor tests for nested directories,
+The 158 synthetic tests include 11 disc-extractor tests for nested directories,
 sector padding, partial final sectors, empty files, manifest hashes, no overwrite,
 invalid descriptors, endian disagreement, out-of-track extents, cycles, unsafe
 names, duplicates, multi-extent rejection, malformed records, truncated tracks,
@@ -1128,11 +1153,12 @@ The 7 motion-use tests cover pool-load decoding, table extents (non-motion words
 and other table starts), routine starts from push runs, the entry check, the
 function table's order, prefix groups and a full extraction with labelled tables,
 data-only words, no overwrite and a rejected entry.
-The 12 customer tests cover the literal-pool check (rejecting a moved table), the
+The 15 customer tests cover the literal-pool check (rejecting a moved table), the
 Crazy Box jump table, back-to-back tables, stop centre and radius, the 40-byte
 record, voice rows per city, the voice-path instruction and partition-name checks,
 the reply steps, voice ids beyond the AFS file count, audio links and a missing
-WAV, an out-of-range destination and a deterministic full extraction with the
+WAV, the landmark-path checks, stop names from the city bases, stop pictures (a
+missing PNG and an empty AFS entry), an out-of-range destination and a deterministic full extraction with the
 line-index check and no overwrite.
 No disc image is required.
 The Python tests are invoked separately; `npm test` does not run them.
