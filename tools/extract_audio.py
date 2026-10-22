@@ -10,7 +10,9 @@ LPCTL, LSA and LEA. A sample's playback rate comes from the pack's 64-byte playb
 pitch = byte 10 << 8 + byte 11 << 2, both signed; 0x2E68: OCT = pitch // 3072, FNS from the
 driver's 768-entry table). Samples played by instrument programs (header word +0x34, driver
 program-change 0x55E0, split walk 0x57B8) take the rate of the split's pitch curve at its lowest
-key (curve 0x5FFC group 4, register 0x5FB0: OCT = value // 384 - 8). No upstream imports.
+key (curve 0x5FFC group 4, register 0x5FB0: OCT = value // 384 - 8). The sound requests the game
+sends (header word +0x2C, driver lookup 0x6B40, event reader 0x6338) are decoded into their timed
+note events, each naming the playback definition and sample it plays. No upstream imports.
 """
 import argparse
 import hashlib
@@ -111,6 +113,87 @@ INSTRUMENT_CODE = {
     0x6078: 0xE1A03443,  # asr r3, r3, #8
     0x607C: 0xE0800003,
 }
+# AICADRV.BIN instruction words the sound request decoding relies on (llvm-objdump --triple=armv4t).
+REQUEST_CODE = {
+    0x0764: 0xE35100A8,  # cmp r1, #0xA8: commands 0xA8..0xAD are sound requests ...
+    0x076C: 0xE35100AD,  # cmp r1, #0xAD
+    0x66E0: 0xE1A01C20,  # lsr r1, r0, #24: ... (0xA0 is a driver control command)
+    0x66E4: 0xE35100A0,
+    0x6B58: 0xE592302C,  # ldr r3, [r2, #0x2c]: request chunk is header word +0x2C
+    0x6B5C: 0xE0822003,
+    0x6B64: 0xE4D34004,  # ldrb r4, [r3], #4: last group index, entries follow
+    0x6B68: 0xE4935004,  # ldr r5, [r3], #4: entry = id << 16 | group offset
+    0x6B6C: 0xE1A06825,
+    0x6B70: 0xE1560820,  # cmp r6, r0, lsr #16: id = request >> 16
+    0x6B94: 0xE3C554FF,
+    0x6B98: 0xE3C558FF,
+    0x6B9C: 0xE0823005,  # group = chunk + offset
+    0x6BA0: 0xE4D34004,  # ldrb r4, [r3], #4: last sequence index
+    0x6BA4: 0xE2005CFF,  # and r5, r0, #0xff00: index = request bits 8-15
+    0x6BA8: 0xE1540425,
+    0x6BAC: 0x3AFFFFF7,
+    0x6BB0: 0xE7931325,  # ldr r1, [r3, index * 4]: sequence offset ...
+    0x6BBC: 0xE0821001,  # ... from the chunk start
+    0x6BD4: 0xE3140080,  # tst r4, #128: header bit 7 = script, else track list
+    0x6E4C: 0xE3A034FF,
+    0x6E50: 0xE5823010,  # a script has no track list ...
+    0x6E54: 0xE5821018,  # ... and its events start after the header byte
+    0x633C: 0xE35500FF,  # cmp r5, #255: end of events
+    0x6344: 0xE3150080,  # tst r5, #128: status byte, else running status
+    0x634C: 0x15C85003,
+    0x6350: 0x05D85003,
+    0x6358: 0xE4D46001,  # ldrb r6, [r4], #1: first data byte
+    0x635C: 0xE206707F,
+    0x6364: 0xE2055070,  # and r5, r5, #0x70: data layout by status
+    0x6370: 0xE597F000,
+    0x6594: 0x63B4, 0x6598: 0x63A8, 0x659C: 0x63A8, 0x65A0: 0x63A8,
+    0x65A4: 0x63B4, 0x65A8: 0x6374, 0x65AC: 0x6398, 0x65B0: 0x63A8,
+    0x6374: 0xE3130080,  # tst r3, #128: in a script 0xDn ...
+    0x637C: 0xE3C00101,  # bic r0, r0, #0x40000000: ... becomes note-on 0x9n
+    0x6380: 0xE4D46001,  # ldrb r6, [r4], #1: velocity
+    0x6384: 0xE1800406,
+    0x6388: 0xE4D46001,  # ldrb r6, [r4], #1: flag byte, low 7 bits << 4
+    0x638C: 0xE206707F,
+    0x6390: 0xE1800207,
+    0x6398: 0xE206707F,  # 0xEn: one byte into bits 8-14
+    0x639C: 0xE3C008FF,
+    0x63A0: 0xE1800407,
+    0x63A8: 0xE4D46001,  # second data byte
+    0x63AC: 0xE206707F,
+    0x63B0: 0xE1800407,
+    0x6400: 0xE3160080,  # tst r6, #128: last byte bit 7 = no delta follows
+    0x6408: 0xE4D45001,  # delta byte ...
+    0x640C: 0xE3150080,
+    0x6414: 0xE4D46001,  # ... bit 7: (b << 7 | next) & ~0x4000
+    0x6418: 0xE1865385,
+    0x641C: 0xE3C55901,
+    0x6424: 0xE0866805,
+    0x6440: 0xE4945004,  # ldr r5, [r4], #4: track list word ...
+    0x6444: 0xE1B06C25,  # ... top byte 0 = events at sequence + offset
+    0x6464: 0xE3560080,  # 0x80 = driver command (low 24 bits << 8)
+    0x6510: 0xE3560090,  # 0x90 = jump; others end (after events if offset != 0)
+    0x6520: 0xE1B05005,
+    0x30D0: 0xE21110FF,  # ands r1, r1, #255: note-on velocity 0 is a note-off
+    0x30D4: 0x0AFFFFE2,
+    0x31F8: 0xE5D10000,  # ldrb r0, [r1]: channel program type ...
+    0x3204: 0xE3500002,  # ... 2 = playback definition list (the +0x30 chunk starts with 2)
+    0x3270: 0xE2898040,  # add r8, r9, #64: definitions after the 0x40-byte list header
+    0x3274: 0xE5997000,  # ldr r7, [r9]: last definition (u16)
+    0x327C: 0xE0077000,
+    0x3280: 0xE5DC00E2,  # ldrb r0, [r12, #0xe2]: key ...
+    0x3284: 0xE5DC10E0,  # ... + (command byte 0 & 0xF0) << 3
+    0x3288: 0xE20110F0,
+    0x328C: 0xE1A01181,
+    0x3290: 0xE1800001,
+    0x3294: 0xE1500007,
+    0x329C: 0xE1A00300,  # lsl r0, r0, #6: 64-byte definitions
+    0x32A0: 0xE0888000,
+    0x32EC: 0xE5DC00E1,  # ldrb r0, [r12, #0xe1]: velocity must lie in definition +0x20..+0x21
+    0x32F0: 0xE5D81020,
+    0x32FC: 0xE5D81021,
+}
+# Sound request ids the driver accepts: command top byte 0xA8..0xAD (0x764).
+REQUEST_FIRST, REQUEST_LAST = 0xA8, 0xAD
 
 
 def digest(data):
@@ -383,6 +466,140 @@ def dtpk_instruments(data, sample_count, table):
     return programs
 
 
+def check_request_code(driver):
+    """Refuse a sound driver whose request lookup, event reader or note-on code differs from the USA one."""
+    for address, word in sorted(REQUEST_CODE.items()):
+        if address + 4 > len(driver) or struct.unpack_from("<I", driver, address)[0] != word:
+            raise ValueError("sound driver instruction at 0x%X is not the expected one" % address)
+
+
+def request_events(data, at, limit, script):
+    """(events, end tick, end offset) of an event stream as the driver reads it (0x6338): MIDI-like
+    status bytes with running status, 0xFF ends. In a script 0xDn is a note-on 0x9n with a third
+    byte whose low 7 bits go to command bits 4-10 and whose bit 7 means no delta follows; other
+    events are always followed by a delta (one byte, or two when the first has bit 7)."""
+    events, tick, status = [], 0, None
+
+    def byte():
+        nonlocal at
+        if at >= limit:
+            raise ValueError("sound request events run past the chunk")
+        at += 1
+        return data[at - 1]
+
+    while True:
+        first = byte()
+        if first == 0xFF:
+            return events, tick, at
+        if first & 0x80:
+            status = first
+        elif status is None:
+            raise ValueError("sound request events start without a status byte")
+        else:
+            at -= 1
+        last = byte()
+        command = status << 24 | (last & 0x7F) << 16
+        layout = status >> 4 & 7
+        if layout == 5 and script:
+            velocity, last = byte(), byte()
+            command = command & ~0x40000000 | velocity << 8 | (last & 0x7F) << 4
+        elif layout == 6:
+            command = command & ~0xFF0000 | (last & 0x7F) << 8
+        elif layout in (1, 2, 3, 7):
+            last = byte()
+            command |= (last & 0x7F) << 8
+        events.append(dict(tick=tick, command="0x%08X" % command, value=command))
+        if not last & 0x80:
+            delta = byte()
+            if delta & 0x80:
+                delta = (delta << 7 | byte()) & ~0x4000
+            tick += delta
+
+
+def describe_event(event, playbacks, defs_at, data):
+    """Name a decoded command; note-ons pick playback definition key + (command & 0xF0) << 3 (0x3280)."""
+    command = event.pop("value")
+    status, key, velocity = command >> 24, command >> 16 & 0xFF, command >> 8 & 0xFF
+    if status >> 4 == 9 and velocity:
+        number = key | (command & 0xF0) << 3
+        if number >= len(playbacks):
+            raise ValueError("sound request plays missing playback definition %d" % number)
+        low, high = data[defs_at + 64 * number + 0x20:defs_at + 64 * number + 0x22]
+        if not low <= velocity <= high:
+            raise ValueError("sound request velocity outside playback definition %d" % number)
+        event.update(kind="note_on", channel=status & 15, playback=number, velocity=velocity,
+                     sample=playbacks[number]["sample"])
+    elif status >> 4 in (8, 9):
+        event.update(kind="note_off", channel=status & 15, playback=key | (command & 0xF0) << 3)
+    else:
+        event.update(kind="command")
+    return event
+
+
+def dtpk_requests(data, playbacks):
+    """Sound requests of a DTPK pack: the chunk at the header word +0x2C holds the last group
+    index (u8), then u32 entries {id << 16 | group offset}; a group holds the last sequence index
+    (u8), then u32 sequence offsets, all relative to the chunk. The game requests id << 16 |
+    index << 8. A sequence whose header byte has bit 7 is a script of events; otherwise a track
+    list of u32 words follows the 4-byte header (top byte 0 events, 0x80 driver command,
+    0x90 jump, others end). A pack without the chunk has none."""
+    at = struct.unpack_from("<I", data, 0x2C)[0]
+    if not at:
+        return []
+    following = [o for o in struct.unpack_from("<8I", data, 0x20) if o > at]
+    limit = min(following, default=len(data))
+    defs_at = struct.unpack_from("<I", data, 0x30)[0] + 0x50
+    if at + 4 + 4 * (data[at] + 1) > limit:
+        raise ValueError("DTPK request chunk overlaps the next chunk")
+    groups = []
+    for number in range(data[at] + 1):
+        entry = struct.unpack_from("<I", data, at + 4 + 4 * number)[0]
+        ident, group = entry >> 16, at + (entry & 0xFFFF)
+        if not REQUEST_FIRST <= ident >> 8 <= REQUEST_LAST:
+            raise ValueError("DTPK request id 0x%04X outside the driver's range" % ident)
+        if group + 4 + 4 * (data[group] + 1) > limit:
+            raise ValueError("DTPK request group 0x%04X outside the chunk" % ident)
+        sequences = []
+        for index in range(data[group] + 1):
+            start = at + struct.unpack_from("<I", data, group + 4 + 4 * index)[0]
+            if not at < start < limit:
+                raise ValueError("DTPK request 0x%04X/%d outside the chunk" % (ident, index))
+            header = data[start]
+            item = dict(index=index, request="0x%08X" % (ident << 16 | index << 8), offset=start,
+                        header=header)
+            if header & 0x80:
+                events, ticks, _ = request_events(data, start + 1, limit, True)
+                item.update(form="script", ticks=ticks,
+                            events=[describe_event(e, playbacks, defs_at, data) for e in events])
+            else:
+                track, words, seen = [], start + 4, set()
+                while True:
+                    if words + 4 > limit or words in seen:
+                        raise ValueError("DTPK request 0x%04X/%d track list runs away" % (ident, index))
+                    seen.add(words)
+                    word = struct.unpack_from("<I", data, words)[0]
+                    words += 4
+                    kind, value = word >> 24, word & 0xFFFFFF
+                    if kind == 0x80:
+                        track.append(dict(kind="command", command="0x%08X" % (value << 8)))
+                    elif kind == 0x90:
+                        track.append(dict(kind="jump", offset=start + value))
+                        words = start + value
+                    elif kind and not value:
+                        track.append(dict(kind="end"))
+                        break
+                    else:
+                        events, ticks, _ = request_events(data, start + value, limit, False)
+                        track.append(dict(kind="events", offset=start + value, ticks=ticks,
+                                          events=[describe_event(e, playbacks, defs_at, data) for e in events]))
+                        if kind:
+                            break
+                item.update(form="track_list", track=track)
+            sequences.append(item)
+        groups.append(dict(id="0x%04X" % ident, offset=group, sequences=sequences))
+    return groups
+
+
 def wav_bytes(pcm, channels, rate):
     buffer = io.BytesIO()
     with wave.open(buffer, "wb") as out:
@@ -400,6 +617,8 @@ def extract(source, output):
     driver = (source / SOUND_DRIVER).read_bytes()
     table_offset, table = driver_fns_table(driver)
     check_instrument_code(driver, table_offset)
+    check_request_code(driver)
+    request_ids = set()
     output.parent.mkdir(parents=True, exist_ok=True)
     staging = Path(tempfile.mkdtemp(prefix=".audio-", dir=output.parent))
     manifest = dict(schema=1, dtpk_nominal_rate=DTPK_NOMINAL_RATE,
@@ -442,6 +661,17 @@ def extract(source, output):
                 samples = dtpk_samples(data)
                 record["playbacks"] = dtpk_playbacks(data, len(samples), table)
                 record["instruments"] = dtpk_instruments(data, len(samples), table)
+                record["requests"] = dtpk_requests(data, record["playbacks"])
+                played = {}
+                for group in record["requests"]:
+                    if group["id"] in request_ids:
+                        raise ValueError("sound request id %s is in two packs" % group["id"])
+                    request_ids.add(group["id"])
+                    for sequence in group["sequences"]:
+                        streams = [sequence] if sequence["form"] == "script" else \
+                            [t for t in sequence["track"] if t["kind"] == "events"]
+                        for event in (e for s in streams for e in s["events"] if e["kind"] == "note_on"):
+                            played.setdefault(event["sample"], []).append(sequence["request"])
                 for item in samples:
                     payload = data[item["offset"]:item["offset"] + item["size"]]
                     pcm = decode_dtpk_sample(payload, item["format"])
@@ -458,8 +688,21 @@ def extract(source, output):
                     record["sounds"].append(dict(
                         item, channels=1, rate=rate, rate_source=rate_source,
                         playbacks=[p["id"] for p in uses], splits=[[p, split["id"]] for p, split in splits],
+                        requests=sorted(set(played.get(item["id"], []))),
                         samples=len(pcm) // 2, payload_sha256=digest(payload),
                         **write("%s/%04d.wav" % (folder.name, item["id"]), pcm, 1, rate)))
+                for group in record["requests"]:
+                    for sequence in group["sequences"]:
+                        streams = [sequence] if sequence["form"] == "script" else \
+                            [t for t in sequence["track"] if t["kind"] == "events"]
+                        parts = ["tick %d %s" % (e["tick"], '<a href="%s/%04d.wav">playback %d</a>'
+                                                 % (folder.name, e["sample"], e["playback"])
+                                                 if e["kind"] == "note_on" else e["kind"] + " " + e["command"])
+                                 for s in streams for e in s["events"]]
+                        if sequence["form"] != "script":
+                            parts += [t["kind"] + " " + t.get("command", "") for t in sequence["track"]
+                                      if t["kind"] != "events"]
+                        page.append("<p>request %s: %s</p>" % (sequence["request"], ", ".join(parts)))
             manifest["files"].append(record)
         (staging / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
         (staging / "index.html").write_text("\n".join(page) + "\n")
