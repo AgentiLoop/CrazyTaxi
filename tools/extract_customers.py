@@ -3,13 +3,13 @@
 
 All of it is static data in the USA executable (1ST_READ.BIN), read the way the game reads it:
 
-* kyakuInitStops (USA 0x0C025688) picks one customer table by CourseMode (0x0C1EBF2C) and, for
+* kyakuInitStops (USA 0x0C025640) picks one customer table by CourseMode (0x0C1EBF2C) and, for
   CourseMode 0 and 1, by ReverseMode (0x0C17720C, the decomp's name); Crazy Box (CourseMode 2) picks
   by MiniGame_No (0x0C1EBF34) through a jump table. A customer record is 40 bytes:
   +0 flag, +4 kind (-1 = unused), +8 x, y, z, +0x14 a line index the routine overwrites,
   +0x18 three signed destination stop numbers (-1 = none), +0x1B pad, +0x1C three floats the
   routine overwrites with route lengths.
-* kyakuTaskStart (0x0C0246E4) asks for destination (frame counter / 600) % 3 and draws the
+* kyakuTaskStart (0x0C024718) asks for destination (frame counter / 600) % 3 and draws the
   customer as character table entry kind_to_character[kind] (USA 0x0C08A118).
 * Stops come from two tables indexed [Game_No (0x0C1EBF30)][MiniGame_No]: a count (USA 0x0C0EC7C4)
   and an array of {point count, point pointer} areas (USA 0x0C0EC764). GetStopPosCenter

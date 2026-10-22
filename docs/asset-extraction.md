@@ -60,7 +60,8 @@ exports the COLDC ground and wall grids; the course-line conversion exports the
 SPLDC traffic lanes with their links; the destination-picture conversion decodes
 the LANDDC pictures with their names; the Fcv conversion exports the key-curve
 motions at the start of MOTDC; the recorded-drive conversion exports the four
-REC* input recordings.
+REC* input recordings; the customer conversion exports where customers wait, the
+stops they ask for and the stop areas.
 The decomp's `tools/model_map.py` documents model/texture mappings (lines 6–50 and
 83–93). Do not apply region-specific executable addresses to this USA build
 without validating them. No upstream source or game data was copied into the
@@ -974,6 +975,77 @@ Assumptions and limits:
 * Group labels follow the name prefixes. They don't say who is drawn: for example,
   `Chat_Direction`'s motions may be played by the driver.
 
+## Customers and stops (JSON)
+
+```sh
+python3 tools/extract_customers.py local-assets/disc --output local-assets/customers \
+  --courses local-assets/courses
+```
+
+Runs in under a second and reads only `1ST_READ.BIN` (`--courses` is optional and
+only feeds one check). Writes `manifest.json` and an `index.html` with one top-view
+map per customer table: green stop areas with their numbers, yellow customers.
+
+Everything is static data in the executable, read the way these routines read it
+(USA addresses; the decomp's are the EU ones):
+
+* `kyakuInitStops` (`0x0C025640`) picks the customer table:
+  * CourseMode (`0x0C1EBF2C`) 0 or 1: by ReverseMode (`0x0C17720C`, the decomp's
+    name) between a normal and a reverse table;
+  * CourseMode 0 with MiniGame_No (`0x0C1EBF34`) 15: a one-customer table;
+  * CourseMode 2 (Crazy Box): one table per mini game 3–14 through a `braf` jump
+    table at `0x0C0257A4`. Other mini games fall back to the Arcade reverse table
+    read with a count of 246.
+* A customer record is 40 bytes: `+0` flag, `+4` kind (−1 = unused), `+8` x, y, z,
+  `+0x14` a line index, `+0x18` three signed destination stop numbers (−1 = none),
+  `+0x1B` pad, `+0x1C` three floats. The routine overwrites `+0x14` (nearest point
+  on the current line) and `+0x1C` (route lengths) at run time; the file values are
+  kept as `line_index_in_file` and `route_lengths_in_file`.
+* `kyakuTaskStart` (`0x0C024718`) asks for destination `(frame counter / 600) % 3`
+  and draws the customer with character `kind_to_character[kind]` (`0x0C08A118`:
+  kind k → character 23 + k, the `char_NN.glb` numbers).
+* Stops are indexed `[Game_No (0x0C1EBF30)][MiniGame_No]`: counts at `0x0C0EC7C4`,
+  areas at `0x0C0EC764` (per stop: point count, point pointer). As in
+  `GetStopPosCenter` (`0x0C025A4C`), the centre is the mean of the area points and
+  the radius is 1.2 × the farthest point's distance.
+* `Chat_TellDestination` (`0x0C060490`) chooses the spoken destination: Arcade city
+  `table[stop × 5 + slot]` at `0x0C0D1EE8`; Original city a fixed Arcade-table row
+  for 16 stops (`original_voice_rows`) and otherwise a rotating generic table at
+  `0x0C0D217C`; Crazy Box always the generic table. `slot` is bits 29–31 of
+  passenger word `+0x148`. Each stop lists its five ids as `voices` (`null` =
+  generic line).
+
+The table addresses are the decomp's data addresses moved by −0x1200. The tool
+refuses to run unless each is the word the USA routine loads from its literal pool,
+each Crazy Box case label loads its table, and the 17 tables lie back to back
+(`0x0C0D9E08`–`0x0C0E37A0`).
+
+Results on the USA files (verified October 22, 2026):
+
+* 17 customer tables, 983 records, all used (none has kind −1): Arcade 246,
+  Arcade reverse 202, Original 246, Original reverse 246, the mini game 15 table 1,
+  and Crazy Box games 3–14: 1, 1, 1, 1, 1, 10, 3, 8, 7, 1, 1, 7.
+* Stops: Arcade 33, Original 29, Crazy Box games 3–15: 1, 1, 1, 1, 7, 5, 3, 8, 7,
+  1, 1, 1, 8.
+* All 2,510 destinations of tables with a stop set are below their stop count, and
+  every kind is in 0–35.
+* `line_index_in_file` is the nearest course-0 point (x/z) for 246/246 Arcade and
+  201/202 Arcade reverse customers. It does not match for Original (1/246 and
+  8/246), so its meaning there is unknown.
+* Two runs give identical output.
+
+Assumptions and limits:
+
+* "Reverse" is only the decomp's variable name; what the player sees for it wasn't
+  checked.
+* The voice values are what the routine queues. That they are `VOICE01` entry
+  numbers is likely (all are below 699) but not traced through the voice player, and
+  who each of the five slots is wasn't traced.
+* The CourseMode 0 / mini game 15 table has no stop set attached: its destination
+  isn't checked.
+* Stop names are not in this data; the Arcade/Original destination pictures
+  (landmarks tool) may correspond but weren't matched.
+
 ## Tests and web build
 
 ```sh
@@ -981,7 +1053,7 @@ PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -v
 npm run build
 ```
 
-The 143 synthetic tests include 11 disc-extractor tests for nested directories,
+The 151 synthetic tests include 11 disc-extractor tests for nested directories,
 sector padding, partial final sectors, empty files, manifest hashes, no overwrite,
 invalid descriptors, endian disagreement, out-of-track extents, cycles, unsafe
 names, duplicates, multi-extent rejection, malformed records, truncated tracks,
@@ -1037,5 +1109,9 @@ The 7 motion-use tests cover pool-load decoding, table extents (non-motion words
 and other table starts), routine starts from push runs, the entry check, the
 function table's order, prefix groups and a full extraction with labelled tables,
 data-only words, no overwrite and a rejected entry.
+The 8 customer tests cover the literal-pool check (rejecting a moved table), the
+Crazy Box jump table, back-to-back tables, stop centre and radius, the 40-byte
+record, voice rows per city, an out-of-range destination and a deterministic full
+extraction with the line-index check and no overwrite.
 No disc image is required.
 The Python tests are invoked separately; `npm test` does not run them.
