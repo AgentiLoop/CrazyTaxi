@@ -182,7 +182,32 @@ player page. The run takes about 10 seconds.
   rate is `44100 * 2 ** OCT * (1024 + FNS) / 1024`. Each sample's WAV uses the
   rate of the first definition that plays it. The manifest's `playbacks` list
   holds every definition with its pitch register and exact rate. Samples no
-  definition uses keep a nominal 22,050 Hz.
+  definition uses fall back to the instrument splits below.
+* **DTPK instrument programs** (header word `+0x34`, present in SNDDC1-3): the
+  driver's program change (`0x55E0`) looks the bank up by header byte `0x11` and
+  reads this chunk: last program index (u8), then u32 program offsets from `+4`,
+  relative to the chunk. A program is an 8-byte header (`+0` last split index;
+  the other bytes are unexplained) followed by its splits. Note-on (`0x57B8`)
+  steps from split to split by the split's own size byte (`+0`). Each split holds
+  the sample as a u16 at `+2` (the sample lookup `0x3C98` treats values from
+  `0x100` as this pack's sample `n - 0x100`; lower values would be a global
+  table), the lowest and highest key at `+4`/`+5`, and five (point count,
+  offset from `+0xC`) curve groups at `+0xC`. Groups 0-3 use 4-byte points;
+  group 4 is the pitch curve with 6-byte points {last key, -, base u16, slope
+  s16}. Curve routine `0x5FFC` picks the first point whose last key is at least
+  the note (or the last point). The value is `base + (slope * (note - segment
+  start)) >> 8`, where the first segment starts at the split's lowest key and
+  each later one starts after the previous point's last key. The value is in
+  1/32 semitones. The driver adds two channel controls (both 0 when centred),
+  clamps the result to `0..0x17FF`, and routine `0x5FB0` turns it into the
+  OCT/FNS register: `OCT = value // 384 - 8`, FNS = FNS table entry
+  `2 * (value mod 384)`. The register is written to the AICA channel's `+0x18`.
+  The manifest's `instruments` list holds every program and split with its
+  pitch points and the pitch register and rate at its lowest and highest key. A
+  sample no definition plays takes the rate of its first split at that split's
+  lowest key. The tool refuses to run unless 64 checked instruction and literal
+  words in `AICADRV.BIN` are exactly as expected and the FNS table sits at
+  `0x7084`, where this code reads it.
 
 Verified October 22, 2026 on the USA files: **798 sounds**. They are SONG01 9
 stereo 44.1 kHz tracks (621.8 s; tracks 0 and 8 loop), VOICE01 699 mono 22.05 kHz
@@ -202,18 +227,35 @@ SNDDC6 7, SNDDC7 8, SNDDC8 5; SNDDC2-3 have none). Every chunk ends exactly
 where the next chunk or the pack's end begins. 82 of the 90 samples get a
 definition rate: 60 play at 22,050 Hz, and others range from 10,406 Hz to
 44,100 Hz (5 at 44,100). 7 samples are played by definitions with different
-rates; their WAV uses the first one. 8 samples use the nominal rate: SNDDC2's 2,
-SNDDC3's 3 and SNDDC1 samples 1, 2 and 19. The decoded PCM is unchanged; only
-the WAV rate differs.
+rates; their WAV uses the first one.
+
+DTPK instruments (USA): 5 programs with 8 splits (SNDDC1 2 programs / 3 splits,
+SNDDC2 2 / 2, SNDDC3 1 / 3). Each program ends exactly where the next one or
+the sample table begins, and every split's size equals its curve data rounded
+up to 4 bytes. The splits play exactly the 8 samples no definition uses
+(SNDDC1 1, 2 and 19; SNDDC2 0-1; SNDDC3 0-2), so no sample keeps the nominal
+rate any more. Their lowest-key rates are SNDDC1 18,540 / 14,718 / 22,050 Hz,
+SNDDC2 19,649 / 29,436 Hz and SNDDC3 15,364 / 15,816 / 18,271 Hz; across their
+key ranges they rise to between 20,780 and 53,876 Hz. The slopes are 258 to
+1,646 (1 to 6.4 pitch units, i.e. 1/32 to 1/5 semitone, per key), far from
+normal keyboard tracking. The note seems to drive a continuous pitch (an
+engine-like sound), but that is not verified. SNDDC1 program 0 split 1's two
+pitch segments meet within one unit (2,719 at key 100, 2,720 at key 101), which
+supports the segment rule. Two runs give identical manifests, the PCM of all 90
+samples is unchanged, and 7 WAV rates changed (SNDDC1 sample 19 stays at
+22,050 Hz, now from its split).
 
 Limits:
 
-* The rate is the definition's own pitch. Key offset (`note - 60`, used only when
-  the channel enables it), channel transpose/detune and bend are taken as zero.
-  Their values come from the sequence data, which isn't decoded.
+* The rate is the definition's own pitch, or the split's at its lowest key. Key
+  offset (`note - 60`, used only when the channel enables it), channel
+  transpose/detune, bend and the notes actually played come from the sequence
+  data, which isn't decoded.
 * Random tune is listed but not applied.
-* SNDDC2-3 (no playback chunk; likely instrument/sequence banks) and the
-  sequences, envelopes, filters and pan aren't decoded.
+* Split curve groups 0-3 (read by the driver, not traced), the split bytes `+1`
+  and `+6..+0xB`, the program header's bytes 1-7, the chunks at header words
+  `+0x20`-`+0x2C` and `+0x38` (SNDDC0 only; likely sequences and tables),
+  envelopes and filters aren't decoded.
 * Sample-entry word `+8` (`0x80` on SNDDC1 samples 3 and 4) is unexplained. The
   driver's sample lookup (`0x3C70`) reads only `+0`, `+4` and `+6`.
 
@@ -1173,7 +1215,7 @@ PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -v
 npm run build
 ```
 
-The 168 synthetic tests include 11 disc-extractor tests for nested directories,
+The 172 synthetic tests include 11 disc-extractor tests for nested directories,
 sector padding, partial final sectors, empty files, manifest hashes, no overwrite,
 invalid descriptors, endian disagreement, out-of-track extents, cycles, unsafe
 names, duplicates, multi-extent rejection, malformed records, truncated tracks,
@@ -1184,10 +1226,12 @@ no overwrite and cleanup. The 10 model tests cover strip winding, triangle lists
 with references, vertex-colour records, repaired attributes, malformed models,
 record chaining, GLB chunks/materials/samplers, manifest output, decal-alpha
 baking in single and city GLBs (counts, pruning, embedded pixels), no overwrite and
-cleanup. The 10 audio tests cover ADX coefficients, scale bias, prediction,
+cleanup. The 17 audio tests cover ADX coefficients, scale bias, prediction,
 stereo interleave, clamping, loop points, malformed streams, AFS tables, DTPK
-register decoding and validation, PCM8/PCM16/AICA ADPCM, WAV output, no overwrite
-and cleanup. The 9 sprite tests cover 4-bit nibble order and selectors, 8-bit
+register decoding and validation, PCM8/PCM16/AICA ADPCM, the FNS table, playback
+pitch, the driver instruction check, split pitch registers, clamping and curve
+segments, instrument program/split layout and rejection, split rate sources, WAV
+output, no overwrite and cleanup. The 9 sprite tests cover 4-bit nibble order and selectors, 8-bit
 banks and rectangular twiddling, unloaded palette entries, SH-4 delay slots,
 pool constants and forward branches, terminated tables with external records,
 texture-number pairs, PNG/manifest output and no overwrite. The 12 character tests
