@@ -56,7 +56,8 @@ geometry, the audio conversion exports ADX and DTPK sounds, and the sprite
 conversion exports the SPR banks; the character conversion assembles people and
 exports their V-format motions; the vehicle conversion assembles traffic and cabs;
 the set-object conversion places the OBJDC street props; the collision conversion
-exports the COLDC ground and wall grids.
+exports the COLDC ground and wall grids; the course-line conversion exports the
+SPLDC traffic lanes with their links.
 The decomp's `tools/model_map.py` documents model/texture mappings (lines 6–50 and
 83–93). Do not apply region-specific executable addresses to this USA build
 without validating them. No upstream source or game data was copied into the
@@ -498,6 +499,85 @@ Assumptions and limits:
 * Collision objects that move (cars, set objects, the extra boxes `InitColliWall`
   builds afterwards) are not part of these files.
 
+## Course lines (glTF 2.0 + JSON)
+
+```sh
+python3 tools/extract_courses.py local-assets/disc --output local-assets/courses
+```
+
+This takes about 1 second and writes, per city, a GLB of line strips
+(`SPLDC1.glb` Arcade, `SPLDC2.glb` Original, `SPLDC3.glb` Crazy Box with an `all`
+scene and one scene per mini game) and a JSON file (`arcade.json`,
+`original.json`, `crazy_box.json`) with every course's points, flags and links and
+each run's course range, plus `manifest.json` and `index.html`. Positions are
+world coordinates, the same space as `models/BINCn.glb`. Course 0 is white, the
+courses a run uses are coloured by speed index, the rest cyan.
+
+* **Layout.** SPLDCn holds only points (x, y, z floats), each course followed by
+  its 32-bit point count. The executable holds the rest:
+  * a directory of three (table, count) pairs, one per CourseMode (the decomp's
+    `CourseSplineGet` / `CourseSplineNumGet` read `table + i*12` and the word its
+    second pointer points to): USA `0x0C0C718C`, tables `0x0C0C4F9C` (Arcade, 290),
+    `0x0C0C5D34` (Original, 328) and `0x0C0C6C94` (Crazy Box, 106);
+  * 12-byte course records: points pointer, count pointer, info pointer. Original
+    courses 319-327 keep their points in the executable, with their counts in a
+    separate executable array;
+  * 12-byte info records of six halfwords. Halfword 0 is flags: USA code at four
+    sites (for example `0x0C0449BE` and `0x0C0453EE`) reads it through
+    `@(8, record)`, masks it with 15 and indexes a float table with it (USA
+    `0x0C0C2D64`, 7 speeds: 0.833, 1.157, 1.852, 4.167, 4.630, 6.481, 7.407).
+    Halfword 1 is kept raw. Halfwords 2-5 are course numbers, named from the
+    geometry they agree with (below): `next`, `branch`, `previous`, `neighbour`;
+  * a stage table of 12-byte (flag, first, count) entries indexed by
+    `Game_No + MiniGame_No` (`0x0C1EBF30` + `0x0C1EBF34`): USA `0x0C0C2BAC`. The
+    USA routine at `0x0C048ED2` walks the entry's courses, keeps the nearest point
+    to a position and copies it out, as the decomp describes `getNearLineIndexAll`. Arcade uses courses 1-282, Original 1-314,
+    the 15 Crazy Box games one course each except game 9 (16-75), game 12 (76-79)
+    and game 13 (80-94); games 7 and 11 share course 102, as they share a
+    collision grid. These courses get the role `stage`; course 0 is `line`, the
+    others `other` (Arcade 283-289, Original 315-327, Crazy Box 1-15).
+* **Finding it in the USA executable.** The load address and directory are
+  found together: three (table, count) pairs whose every record reads back, with
+  each in-file count right after its points, for SPLDC1-3 at one shared
+  sector-aligned address. That gives `0x0C328000`, which the decomp's memory map
+  gives for SPLDCn. The stage table is the longest run of entries that fit the
+  three tables and is referenced by a pool word; the speed table is the address
+  every `and #15,r0; shll2 r0; fmov.s @(r0,Rm)` site loads into `Rm` (4 sites).
+* **Result.** Arcade 290 courses, 26,883 points; Original 328, 31,500; Crazy Box
+  106, 17,094. The files are covered exactly by the referenced courses except 4
+  runs of 476-488 bytes in SPLDC2 that nothing points to (listed in the manifest).
+  Crazy Box courses 0-5, 7-12, 14 and 15 all point at course 98's 3 points, and 6
+  at course 101's.
+
+Checks:
+
+* Links against geometry, over each city's stage courses: `next` goes from this
+  end to that start (Arcade median gap 280, at most 540; Original 250, 634),
+  `previous` from that end to this start (280/540; 256/4,075), `branch` is a
+  second next (61 Arcade, 60 Original), and `neighbour` is a parallel lane: from
+  this course's middle point the neighbour's nearest point is a median 39.7 units
+  away in Arcade (at most 66) and 51.4 in Original, and 262 of 278 / 290 of 314
+  pairs name each other back.
+* Points against the collision ground (`extract_collision.py` JSON and a port of
+  `GetCollision2D`): all 25,712 Arcade stage points are on `#road`, median 0.0
+  units above it and all within 2; 27,744 of 27,806 Original stage points are
+  within 2 units (`#road` or `#high_road`). Original courses 315-318 run on
+  `#sub_road`. Course 0 sits about 5 units above the Arcade road.
+* All 3 GLBs pass the Khronos `gltf-validator` with 0 errors and 0 warnings, and
+  two runs give identical output. Nothing has been visually inspected.
+
+Assumptions and limits:
+
+* `next`, `branch`, `previous` and `neighbour` are names taken from the geometry
+  above, not from code that was read; the flag bits above the low nibble and
+  halfword 1 are kept raw.
+* The speed values' units (per frame or otherwise) are not established.
+* The decomp's engine notes call 288/289 the Arcade cable-car lines; the other
+  `other` courses (Arcade 283-287, Original 315-327, Crazy Box 1-15) were not
+  traced to the code that uses them.
+* The Arcade visibility lists the car's nearest course-0 point selects are not
+  exported.
+
 ## Tests and web build
 
 ```sh
@@ -505,7 +585,7 @@ PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -v
 npm run build
 ```
 
-The 88 synthetic tests include 11 disc-extractor tests for nested directories,
+The 95 synthetic tests include 11 disc-extractor tests for nested directories,
 sector padding, partial final sectors, empty files, manifest hashes, no overwrite,
 invalid descriptors, endian disagreement, out-of-track extents, cycles, unsafe
 names, duplicates, multi-extent rejection, malformed records, truncated tracks,
@@ -537,5 +617,9 @@ collision tests cover shortest exact float text, header consistency, the kind
 table, wall ends against `CheckColliWallSegment`, ground grids (shifted or
 rescaled headers, surfaces outside their cell, items missing from their cell),
 inert walls, winding, the largest-grid rule and a full extraction with shared
-Crazy Box games. No disc image is required.
+Crazy Box games. The 7 course-line tests cover counts that must follow their
+points, executable-resident points, the directory and shared load address
+(rejecting a shifted file), the longest stage-table run, the speed table from the
+masked-index code, link statistics and a full extraction with shared points,
+unreferenced bytes and per-game scenes. No disc image is required.
 The Python tests are invoked separately; `npm test` does not run them.

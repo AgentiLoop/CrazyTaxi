@@ -9,8 +9,8 @@ SPLDCn.BIN is loaded whole at one address for the run's city (CourseMode 0 Arcad
   point count (the 32-bit word right after the points) and a pointer to a 12-byte info record.
   A few Original courses keep their points in the executable, with their counts in a separate
   executable array.
-* Info: six halfwords. Word 0 is flags; its low nibble indexes the speed table (read as
-  `@(8, record)` then `& 15` by the traffic and cable-car drivers). Halfword 1 is kept raw (bit 3
+* Info: six halfwords. Word 0 is flags; its low nibble indexes the speed table (code reads
+  it through `@(8, record)`, then `& 15`). Halfword 1 is kept raw (bit 3
   is set when halfword 3 is non-zero). Halfwords 2-5 are course numbers, named here from the
   geometry they agree with: next (its start lies past this course's end), branch (a second
   next), previous (its end lies before this start) and neighbour (the parallel lane, ~40-50 away).
