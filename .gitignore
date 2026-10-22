@@ -1,0 +1,12 @@
+node_modules/
+dist/
+.agent/
+.DS_Store
+# Keep user-provided game data out of the public source repository.
+*.bin
+*.BIN
+*.gdi
+*.GDI
+*.cdi
+*.chd
+local-assets/
