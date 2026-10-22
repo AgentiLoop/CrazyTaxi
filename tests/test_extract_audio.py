@@ -50,10 +50,32 @@ def split(sample, low, high, points):
     body += bytes(-len(body) % 4)
     body[0] = len(body)
     return bytes(body)
-def dtpk(entries, payload, playbacks=(), programs=()):
+def requests(groups):
+    """A request chunk: (id, [sequence bytes]) groups, all offsets relative to the chunk start."""
+    head = bytearray(4 + 4 * len(groups))
+    head[0] = len(groups) - 1
+    tables, bodies = [], []
+    for ident, sequences in groups:
+        table = bytearray(4 + 4 * len(sequences))
+        table[0] = len(sequences) - 1
+        tables.append(table)
+        bodies.append(sequences)
+    at = len(head) + sum(len(t) for t in tables)
+    group_at = len(head)
+    for number, ((ident, sequences), table) in enumerate(zip(groups, tables)):
+        struct.pack_into("<I", head, 4 + 4 * number, ident << 16 | group_at)
+        group_at += len(table)
+        for index, sequence in enumerate(sequences):
+            struct.pack_into("<I", table, 4 + 4 * index, at)
+            at += len(sequence)
+    return bytes(head) + b"".join(bytes(t) for t in tables) + b"".join(s for b in bodies for s in b)
+
+
+def dtpk(entries, payload, playbacks=(), programs=(), request_chunk=b""):
     """A DTPK pack whose sample table sits at 0x40, entries as (pcms, loop flag, offset, size, lsa, lea),
     then (if given) a playback chunk at the end with 64-byte (sample, semitones, detune) definitions
-    and an instrument chunk of programs, each a list of split() byte strings."""
+    (velocity range 0..127), an instrument chunk of programs, each a list of split() byte strings,
+    and a request chunk."""
     table = struct.pack("<I", len(entries) - 1)
     for pcms, looped, offset, size, lsa, lea in entries:
         register = looped << 9 | pcms << 7 | offset >> 16
@@ -68,7 +90,7 @@ def dtpk(entries, payload, playbacks=(), programs=()):
         struct.pack_into("<H", chunk, 0x10, len(playbacks) - 1)
         for number, (sample, semitones, detune) in enumerate(playbacks):
             entry = bytearray(64)
-            entry[0], entry[2] = number & 0xFF, sample
+            entry[0], entry[2], entry[0x21] = number & 0xFF, sample, 127
             struct.pack_into("bb", entry, 10, semitones, detune)
             chunk += entry
         struct.pack_into("<I", data, 0x30, len(data))
@@ -81,6 +103,9 @@ def dtpk(entries, payload, playbacks=(), programs=()):
             chunk += bytes((len(splits) - 1,)) + bytes(7) + b"".join(splits)
         struct.pack_into("<I", data, 0x34, len(data))
         data += chunk
+    if request_chunk:
+        struct.pack_into("<I", data, 0x2C, len(data))
+        data += request_chunk
     return bytes(data)
 
 
@@ -91,7 +116,7 @@ def fns_table():
 def driver():
     """A stand-in sound driver: the checked instruction words, then the FNS table at 0x7084."""
     data = bytearray(0x7084)
-    for address, word in audio.INSTRUMENT_CODE.items():
+    for address, word in list(audio.INSTRUMENT_CODE.items()) + list(audio.REQUEST_CODE.items()):
         struct.pack_into("<I", data, address, word)
     return bytes(data) + struct.pack("<768H", *fns_table()) + b"\0\x08"
 
@@ -256,6 +281,63 @@ class AudioTests(unittest.TestCase):
         values = struct.unpack("<200h", audio.decode_aica_adpcm(b"\xff" * 100))
         self.assertEqual(values[-1], -32768)
 
+    def test_request_code_check(self):
+        audio.check_request_code(driver())
+        changed = bytearray(driver())
+        changed[0x6B58] ^= 1
+        with self.assertRaises(ValueError):
+            audio.check_request_code(bytes(changed))
+        with self.assertRaises(ValueError):
+            audio.check_request_code(driver()[:0x6000])
+
+    def test_request_events(self):
+        # Script: 0xDF key velocity flag; flag bit 7 = no delta, else a delta byte follows.
+        events, ticks, end = audio.request_events(b"\xdf\x00\x66\x00\x32\xdf\x01\x56\x83\xff", 0, 10, True)
+        self.assertEqual([(e["tick"], e["value"]) for e in events], [(0, 0x9F006600), (50, 0x9F015630)])
+        self.assertEqual((ticks, end), (50, 10))
+        # Track events: running status, two-byte delta (b << 7 | next) & ~0x4000, one-byte 0xCn and 0xEn.
+        stream = b"\x90\x10\x20\x05\x11\x21\x81\x00\xc5\x07\x02\xe0\x40\x01\xd3\x09\x00\xff"
+        events, ticks, _ = audio.request_events(stream, 0, len(stream), False)
+        self.assertEqual([(e["tick"], e["value"]) for e in events],
+                         [(0, 0x90102000), (5, 0x90112100), (133, 0xC5070000), (135, 0xE0004000), (136, 0xD3090000)])
+        self.assertEqual(ticks, 136)
+        for bad in (b"\x10\x20\x00\xff", b"\xdf\x00\x66\x80", b"\x90\x10"):
+            with self.assertRaises(ValueError):
+                audio.request_events(bad, 0, len(bad), True)
+
+    def test_dtpk_requests(self):
+        script = b"\xc0\xdf\x00\x7c\x80\xdf\x01\x40\x00\x10\xdf\x00\x00\x80\xff"
+        track = struct.pack("<4I", 0x40000000, 0x80A00012, 0x00000010, 0x91000000) + b"\x9f\x01\x20\x00\xff"
+        data = dtpk([(1, 0, 0x54, 2, 0, 2)], b"\x10\x20", [(0, 0, 0), (0, 0, 0)],
+                    request_chunk=requests([(0xA905, [script]), (0xA800, [track])]))
+        groups = audio.dtpk_requests(data, [dict(sample=0), dict(sample=0)])
+        self.assertEqual([g["id"] for g in groups], ["0xA905", "0xA800"])
+        first = groups[0]["sequences"][0]
+        self.assertEqual((first["request"], first["form"], first["header"], first["ticks"]),
+                         ("0xA9050000", "script", 0xC0, 16))
+        self.assertEqual([(e["tick"], e["kind"], e.get("playback"), e.get("velocity")) for e in first["events"]],
+                         [(0, "note_on", 0, 0x7C), (0, "note_on", 1, 0x40), (16, "note_off", 0, None)])
+        listed = groups[1]["sequences"][0]
+        self.assertEqual([t["kind"] for t in listed["track"]], ["command", "events", "end"])
+        self.assertEqual(listed["track"][0]["command"], "0xA0001200")
+        self.assertEqual(listed["track"][1]["events"][0]["playback"], 1)
+        bad_cases = [
+            requests([(0xB000, [script])]),                                   # id outside 0xA8..0xAD
+            requests([(0xA905, [b"\xc0\xdf\x02\x7c\x80\xff"])]),               # missing playback 2
+            requests([(0xA905, [b"\xc0\xdf\x00\x7c\x80"])]),                   # no end marker
+            requests([(0xA800, [struct.pack("<2I", 0x40000000, 0x90000004)])]),  # jump loops
+        ]
+        for chunk in bad_cases:
+            with self.assertRaises(ValueError):
+                audio.dtpk_requests(dtpk([(1, 0, 0x54, 2, 0, 2)], b"\x10\x20", [(0, 0, 0), (0, 0, 0)],
+                                         request_chunk=chunk), [dict(sample=0), dict(sample=0)])
+        narrow = bytearray(data)
+        defs = struct.unpack_from("<I", narrow, 0x30)[0] + 0x50
+        narrow[defs + 0x21] = 0x10  # playback 0 accepts velocities 0..16 only
+        with self.assertRaises(ValueError):
+            audio.dtpk_requests(bytes(narrow), [dict(sample=0), dict(sample=0)])
+        self.assertEqual(audio.dtpk_requests(dtpk([(1, 0, 0x54, 2, 0, 2)], b"\x10\x20"), []), [])
+
     def test_extract_writes_wavs_and_refuses_existing_output(self):
         with tempfile.TemporaryDirectory() as tmp:
             source = Path(tmp) / "disc"
@@ -264,7 +346,8 @@ class AudioTests(unittest.TestCase):
                 (source / name).write_bytes(afs([adx([block(1, [1] * 32)])]))
             for name in audio.DTPK_SOURCES:
                 (source / name).write_bytes(dtpk([(1, 0, 0x54, 2, 0, 2)], b"\x10\x20"))
-            (source / "SNDDC0.BIN").write_bytes(dtpk([(1, 0, 0x54, 2, 0, 2)], b"\x10\x20", [(0, -16, 0), (0, -12, 0)]))
+            (source / "SNDDC0.BIN").write_bytes(dtpk([(1, 0, 0x54, 2, 0, 2)], b"\x10\x20", [(0, -16, 0), (0, -12, 0)],
+                                                     request_chunk=requests([(0xA905, [b"\xc0\xdf\x01\x7c\x80\xff"])])))
             (source / "SNDDC2.BIN").write_bytes(dtpk([(1, 0, 0x54, 2, 0, 2)], b"\x10\x20",
                                                      programs=[[split(0, 0, 127, [(127, 2688, 323)])]]))
             output = Path(tmp) / "audio"
@@ -283,6 +366,8 @@ class AudioTests(unittest.TestCase):
                 self.assertEqual(sample.getframerate(), 17496)
                 self.assertEqual(sample.readframes(2), struct.pack("<2h", 0x1000, 0x2000))
             self.assertEqual(manifest["files"][3]["sounds"][0]["rate_source"], "nominal")
+            self.assertEqual((first["requests"], manifest["files"][3]["sounds"][0]["requests"]), (["0xA9050000"], []))
+            self.assertIn("request 0xA9050000: tick 0", (output / "index.html").read_text())
             with wave.open(str(output / "SNDDC1" / "0000.wav")) as sample:
                 self.assertEqual(sample.getframerate(), 22050)
             instrument = manifest["files"][4]
@@ -291,6 +376,10 @@ class AudioTests(unittest.TestCase):
             self.assertEqual(instrument["instruments"][0]["splits"][0]["at_high_key"]["pitch"], 2688 + (323 * 127 >> 8))
             with self.assertRaises(ValueError):
                 audio.extract(source, output)
+            (source / "SNDDC1.BIN").write_bytes(dtpk([(1, 0, 0x54, 2, 0, 2)], b"\x10\x20", [(0, -12, 0)],
+                                                     request_chunk=requests([(0xA905, [b"\xc0\xdf\x00\x7c\x80\xff"])])))
+            with self.assertRaises(ValueError):  # the same request id in two packs
+                audio.extract(source, Path(tmp) / "again")
             (source / "SNDDC8.BIN").write_bytes(b"nope")
             with self.assertRaises(ValueError):
                 audio.extract(source, Path(tmp) / "again")
