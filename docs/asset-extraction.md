@@ -790,9 +790,9 @@ Assumptions and limits:
 * The math is done in float64 with the exact library formulas, but not with the
   SH-4's `fsca` table or its arc tangent and arc sine approximations, so angles
   can differ from the console by small amounts.
-* Which motion each driver, cab state or customer plays isn't named. The
-  manifest lists the executable references for each motion; some sit in runs of 8
-  consecutive words (for example at `0x0C0D3B54`), whose meaning wasn't traced.
+* This manifest lists only raw executable references. Which routine loads each
+  motion (driver actions, customer states and others) is in the motion-use
+  listing below.
 * `FcvPlayBuffer`'s extra models (hats and the like) aren't drawn here. The
   characters tool already places the V draw routine's extras.
 * No animation has been viewed.
@@ -890,6 +890,90 @@ Checks (verified October 22, 2026 on the USA file):
   code doesn't load it. Its use as the console menu's disc picture is an
   assumption, not traced. The image has not been viewed.
 
+## Motion uses (JSON)
+
+```sh
+python3 tools/extract_motion_uses.py local-assets/disc --output local-assets/motion_uses
+```
+
+Runs in under a second. Writes `manifest.json` and an `index.html` table that
+lists, for every routine, the motions it loads. It covers both MOTDC formats: the
+56 V motions (named `motion_<offset>` as in the characters tool) and the 278 Fcv
+motions (named `fcv_<index>_<offset>` as in the Fcv tool).
+
+Code picks a motion with a PC-relative long load (`mov.l @(disp, PC), Rn`). The
+pool word is either the motion's address (a direct use) or the address of a run of
+motion addresses that the routine copies and picks from (a table use). A table
+runs over consecutive motion words. It ends at the first word that isn't a
+motion, or where another table that code loads begins. The tool scans every such
+load in the code (below `0x0C08A000`) and files it under the routine that
+contains it.
+
+Routine names and sizes come from the decomp's `functions.txt` (EU build). The
+USA code sits at a different place, shifted by an amount that changes along the
+executable:
+
+* −0xE2C for the ride lines (`Chat_*`), the driver (`Drv_*`) and the customer
+  (`psg*`) code;
+* −0xE30 for the mini-game and later customer routines;
+* −0xF18 near the course objects;
+* −0x954 near the attract states;
+* −0xF00 for `nd_StartWait_PutKyaku`.
+
+A shift is accepted only where at least 6 of the 13 decomp functions around a
+name land on USA call targets or pointer words. The tool refuses to run unless
+every listed start is a call target, a pointer word, or opens with a register
+push. Loads outside the listed routines are kept without a name, under the nearest
+routine start before them: a call target, a code pointer, or the first push of a
+run. The crowd code (`ped*`) doesn't line up with the decomp's sizes, so it stays
+unnamed. `group` comes from the name prefix: `psg`/`Psg`/`EndPsg` → customer,
+`Drv_` → driver, `Chat_` → chat, otherwise other. In `psgEnterState0`, the five
+tables are labelled from the decomp's `src/psg.c`: idle (motion set A), idle (set B),
+calling out, hey taxi, and the mini game 8 boyfriend.
+
+Each motion entry lists its uses (routine, `direct` or `table` with the table
+address and slot, plus a label where one is known) and its `other_words`. These
+are executable words that hold the motion's address but that no listed load or
+table accounts for. They include the two all-motion tables and data records such
+as the character-select table.
+
+Results on the USA files (verified October 22, 2026):
+
+* 354 loads and 65 tables, filed under 42 routines: 37 named and 5 unnamed.
+* Code loads 275 of the 278 Fcv motions and 48 of the 56 V motions.
+  * The three Fcv motions with no load (`fcv_077`, `fcv_170`, `fcv_171`) appear
+    only in the Fcv motion table.
+  * The eight V motions with no load are the character-select motions. Each
+    appears in the all-V table and in the select records at `0x0C12F454`.
+* By group:
+  * Fcv: 164 customer, 136 driver, 24 chat and 24 other.
+  * V: 41 customer and 29 other.
+  * A motion can count in more than one group.
+* `psgEnterState0` through `psgEnterState6` start at the seven addresses in the
+  customer state-entry pointer table at `0x0C0D48F8`.
+* Cross-check against the decomp's C: for each of the 31 named routines whose
+  decomp source spells out motion addresses, every one of those motions is among
+  the USA routine's loads. None are missing.
+  * The five `psgEnterState0` tables equal the decomp's lists entry for entry
+    (10, 6, 7, 5 and 3 motions).
+  * The extras come from data tables that the C copies from templates. In
+    addition, `Drv_StartGetOff` loads `fcv_276` and `fcv_277`, and
+    `Exec_DCmini_Game9` loads two more motions than its decomp C names.
+* Two runs give identical output.
+
+Assumptions and limits:
+
+* The names are the decomp's, carried over by shift. Only the 31 cross-checked
+  routines and the state-entry table are confirmed beyond the entry check.
+* Table extents follow the stop rule above. A table that is really an array of
+  records (for example the tennis players' at `0x0C13E1D0`) is listed as one run.
+  Which slot a routine picks at run time, and why, wasn't traced except where the
+  decomp documents it.
+* Motions reached only through computed addresses, or loaded outside the code
+  range, aren't attributed.
+* Group labels follow the name prefixes. They don't say who is drawn: for example,
+  `Chat_Direction`'s motions may be played by the driver.
+
 ## Tests and web build
 
 ```sh
@@ -897,7 +981,7 @@ PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -v
 npm run build
 ```
 
-The 136 synthetic tests include 11 disc-extractor tests for nested directories,
+The 143 synthetic tests include 11 disc-extractor tests for nested directories,
 sector padding, partial final sectors, empty files, manifest hashes, no overwrite,
 invalid descriptors, endian disagreement, out-of-track extents, cycles, unsafe
 names, duplicates, multi-extent rejection, malformed records, truncated tracks,
@@ -949,5 +1033,9 @@ press-without-rising-edge rejection, the loader pool (order, capacity), generato
 continuations, reseeds, lost state and the call limit, and a full extraction.
 The 7 PVR tests cover header fields, the `GBIX` prefix, length and reserved-byte
 rejection, twiddled pixels and a full extraction with no overwrite.
+The 7 motion-use tests cover pool-load decoding, table extents (non-motion words
+and other table starts), routine starts from push runs, the entry check, the
+function table's order, prefix groups and a full extraction with labelled tables,
+data-only words, no overwrite and a rejected entry.
 No disc image is required.
 The Python tests are invoked separately; `npm test` does not run them.
