@@ -54,7 +54,7 @@ GDI layouts, cooked sectors, CHD decompression, interleaved or multi-extent file
 now exports the four TEXDC banks and the model conversion exports POLDC/BINC
 geometry, the audio conversion exports ADX and DTPK sounds, and the sprite
 conversion exports the SPR banks; the character conversion assembles people and
-exports their V-format motions.
+exports their V-format motions; the vehicle conversion assembles traffic and cabs.
 The decomp's `tools/model_map.py` documents model/texture mappings (lines 6–50 and
 83–93). Do not apply region-specific executable addresses to this USA build
 without validating them. No upstream source or game data was copied into the
@@ -118,8 +118,8 @@ our tool also reads them, while the decomp skips them because their strips have
 Eight BINC1 vertices have NaN U values; these are replaced with 0 and counted in
 `repaired_vertices`. All 1,699 GLBs passed Khronos `gltf-validator`, with every
 image URI resolved, and reported 0 errors and 0 warnings. Characters are assembled
-by the character conversion below. Not yet exported: traffic car part sets and
-placing POLDC1–3 props.
+by the character conversion below and vehicles by the vehicle conversion. Not yet
+exported: placing POLDC1–3 props.
 
 ## Audio conversion (WAV)
 
@@ -294,6 +294,69 @@ Not exported:
   played with two-bone IK.
 * The low-detail 8-part people table at `0x0C1324D4`.
 
+## Vehicles (glTF 2.0)
+
+```sh
+python3 tools/extract_vehicles.py local-assets/disc \
+  --textures local-assets/textures --output local-assets/vehicles
+```
+
+This takes about 13 seconds and writes 22 traffic GLBs (`traffic/type_NN_<name>.glb`),
+5 cab GLBs (`cabs/cab_N.glb`), `manifest.json` and `index.html`. Everything is found
+in the USA files; no regional address is reused:
+
+* **Traffic table (carTbl).** The longest run of 0xA8-byte records whose body,
+  far body and shadow words are model addresses and whose `+0xA4` word points to
+  the type's name. USA: `0x0C0A1488`, 22 types (decomp EU `0x0C0A2628`). The names
+  are space-padded: `E_Taxi`, `P_Compact`, `P_Wagon`, `P_Sedan_A`, `P_Sedan_B`,
+  `P_JEEP`, `P_Picup`, `P_Box`, `P_Sedan_C`, `P_IceBox`, `P_Bus`, `P_Convoy`,
+  `P_Convoy_TLR`, `P_Convoy_TLR2`, `P_Mercury`, `P_Cable`, `P_RailRoad_A/B/C`
+  and three more `P_Cable`. Types 0–15 use POLDC0; 16–21 use POLDC2 (the only
+  model file holding all their models, at the shared POLDC1–3 base `0x0C5E0000`).
+* **Colours.** The 32 RGB triples after the last record (`0x0C0A22F8`, the
+  literal in the USA `putCarModel`), and per type a 32-entry index list at
+  `+0x9C` (PcarEvInit picks `random & 31`). E_Taxi, IceBox, Bus, the convoy and
+  the rail vehicles have none. The manifest lists them; paint is **not** applied,
+  because the rule for which strips take the colour is not verified.
+* **Placement (USA `putCarModel`, about `0x0C0434E0`).** Scene "near": body
+  `+0x00`, shadow `+0x08`, extra `+0x10`, and for axle k the wheel model
+  (`+0x58/+0x60/+0x68`) at the axle centre (`+0x70/+0x7C/+0x88`) plus the second
+  model (`+0x5C/+0x64/+0x6C`) at (−x, y, z). The first axle is skipped when
+  `+0x58` is 0, and no wheels are drawn when `+0x60` is 0. Scene "far" holds
+  `+0x04/+0x0C/+0x14` (no wheels). Scene "lamps" holds the eight light variants
+  per level at `+0x18` and `+0x38`.
+* **Cabs (init_CarMain tables, USA `0x0C0D9DC4`).** Five model-set pointers, then
+  five pointers to wheel positions (`+0x6C`) and five to four more points
+  (`+0x70`); entry 4 is the default. USA sets have 14 words (the default set has 7
+  before it runs into set 0). Scene "car" follows the USA `putPlayerCar`
+  (`0x0C0203E8`): set[4] body and set[6] drawn 1.2 below the car origin (the
+  `nlTranslate(0, −1.2, 0)` at `0x0C02045C`), wheels set[0..3] at the `+0x6C`
+  positions. Every other entry goes to the "alternates" scene: set[5] (drawn
+  instead of set[6] with a fare on board), set[7]/[8] (roof height), set[9..12]
+  (wheel-sized, placed at the wheel positions) and set[13] (a second body).
+
+Checks:
+
+* The decomp's model map (`model-map/game.dcgs`) labels 68 vehicle models; 67 are
+  in the same file, at the same offset, on the same type, with the same role here.
+  The other is POLDC3 offset 0, which the decomp ties to a code literal rather
+  than to carTbl.
+* Axles, `+0x94` (2000 for cars, 8000 for the bus) and `+0x98` (28, 40) match the
+  decomp's figures. P_Mercury's body is cab set 3's body, as the decomp says.
+* All 27 GLBs pass the Khronos `gltf-validator` with 0 errors and 0 warnings, and
+  every texture URI resolves. Two runs give identical output. 6,843 traffic and
+  14,356 cab triangles; no model has been visually inspected.
+
+Assumptions and limits:
+
+* The cab order (Axel, B.D. Joe, Gena, Gus) is the selection-screen order.
+* Wheel heights come from the tables; in play the suspension sets them. The traffic
+  body sits at the car origin; in play it is lifted by the suspension values.
+* The roles of the cab alternates and the lamp variants are read from where the
+  models sit and which flags pick them, not confirmed in play.
+* The default cab set's wheel models (one thin disc twice, one full axle twice) are
+  placed as the game would place them, so its axle models overlap.
+
 ## Tests and web build
 
 ```sh
@@ -301,7 +364,7 @@ PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -v
 npm run build
 ```
 
-The 66 synthetic tests include 11 disc-extractor tests for nested directories,
+The 72 synthetic tests include 11 disc-extractor tests for nested directories,
 sector padding, partial final sectors, empty files, manifest hashes, no overwrite,
 invalid descriptors, endian disagreement, out-of-track extents, cycles, unsafe
 names, duplicates, multi-extent rejection, malformed records, truncated tracks,
@@ -322,5 +385,8 @@ run a hand-assembled draw routine symbolically (pool loads, delay slots, `cmp/eq
 branches on the character, a `braf` jump table, unresolved-branch rejection),
 identify its primitives, build the bone tree, reject unbalanced matrix stacks, and
 cover base/table/motion/select-table discovery, quaternions, world positions,
-looping animation output and no overwrite. No disc image is required.
+looping animation output and no overwrite. The 6 vehicle tests cover traffic-table
+runs, names, colour tables, model-file ownership (including ambiguity), putCarModel
+wheel/mirror/level rules, cab-table discovery and set lengths, and multi-scene GLBs
+with shared meshes. No disc image is required.
 The Python tests are invoked separately; `npm test` does not run them.
