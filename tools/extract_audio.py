@@ -5,7 +5,10 @@ Format references (supplied decomp): tools/model_map.py adx_info, audio_file_row
 dtpk_sounds list the containers; src/gen_hc.c ADX_DecodeSteFloat shows the game's block
 scale ((word & 0x1FFF) + 1) and end marker (bit 15). DTPK sample entries are read as the
 AICA channel registers they hold: SA (23 bits), PCMS (0 PCM16, 1 PCM8, 2/3 ADPCM),
-LPCTL, LSA and LEA. No upstream imports.
+LPCTL, LSA and LEA. A sample's playback rate comes from the pack's 64-byte playback definitions
+(header word +0x30) as the disc's sound driver AICADRV.BIN computes it (note-on routine 0x3B54:
+pitch = byte 10 << 8 + byte 11 << 2, both signed; 0x2E68: OCT = pitch // 3072, FNS from the
+driver's 768-entry table). No upstream imports.
 """
 import argparse
 import hashlib
@@ -23,9 +26,15 @@ import wave
 ADX_SOURCES = ("SONG01.AFS", "VOICE01.AFS")
 DTPK_SOURCES = ("SNDDC0.BIN", "SNDDC1.BIN", "SNDDC2.BIN", "SNDDC3.BIN",
                 "SNDDC5.BIN", "SNDDC6.BIN", "SNDDC7.BIN", "SNDDC8.BIN")
-# A DTPK pack stores no rate: the playing program's pitch sets it. WAVs carry this nominal rate.
+# A sample's rate lives in the playback definitions that use it; samples no definition uses
+# (the instrument banks SNDDC2-3, three SNDDC1 entries) keep this nominal rate.
 DTPK_NOMINAL_RATE = 22050
 AICA_STEP_SCALE = (230, 230, 230, 230, 307, 409, 512, 614)
+SOUND_DRIVER = "AICADRV.BIN"
+# AICA plays a sample at 44100 Hz when OCT = 0 and FNS = 0; each octave doubles or halves it.
+AICA_BASE_RATE = 44100
+# The driver's pitch unit is 1/256 semitone: 3072 per octave, FNS table indexed by pitch >> 2.
+PITCH_PER_OCTAVE = 3072
 
 
 def digest(data):
@@ -167,6 +176,50 @@ def decode_dtpk_sample(payload, sample_format):
     raise ValueError("unsupported DTPK sample format")
 
 
+def driver_fns_table(driver):
+    """(offset, table) of the sound driver's FNS table: 768 halfwords for one octave in 1/64
+    semitone steps, located by the values 1024 * (2 ** (i / 768) - 1) rounded."""
+    expected = struct.pack("<768H", *(round(1024 * (2 ** (i / 768) - 1)) for i in range(768)))
+    at = driver.find(expected)
+    if at < 0 or at & 1:
+        raise ValueError("FNS table not found in sound driver")
+    return at, list(struct.unpack_from("<768H", driver, at))
+
+
+def pitch_rate(pitch, table):
+    """(OCT/FNS register, rate in Hz) for a driver pitch in 1/256 semitones relative to 44100 Hz."""
+    octave, step = divmod(pitch, PITCH_PER_OCTAVE)
+    if not -8 <= octave <= 7:
+        raise ValueError("pitch outside the AICA octave range")
+    fns = table[step >> 2]
+    return (octave & 15) << 11 | fns, AICA_BASE_RATE * 2.0 ** octave * (1024 + fns) / 1024
+
+
+def dtpk_playbacks(data, sample_count, table):
+    """Playback definitions of a DTPK pack: the chunk at the header word +0x30 holds the last index
+    (u16 at +0x10), then 64-byte entries from +0x50 {+0 index, +2 sample, +10 signed semitones,
+    +11 signed 1/64 semitones, +0x1C random tune}. A pack without the chunk has none."""
+    at = struct.unpack_from("<I", data, 0x30)[0]
+    if not at:
+        return []
+    if at + 0x50 > len(data):
+        raise ValueError("DTPK playback chunk outside pack")
+    count = struct.unpack_from("<H", data, at + 0x10)[0] + 1
+    following = [o for o in struct.unpack_from("<8I", data, 0x20) if o > at]
+    if at + 0x50 + 64 * count > min(following, default=len(data)):
+        raise ValueError("DTPK playback chunk overlaps the next chunk")
+    playbacks = []
+    for number in range(count):
+        entry = data[at + 0x50 + 64 * number:at + 0x50 + 64 * (number + 1)]
+        semitones, detune = struct.unpack_from("bb", entry, 10)
+        if entry[0] != number & 0xFF or entry[2] >= sample_count:
+            raise ValueError("bad DTPK playback entry %d" % number)
+        register, rate = pitch_rate(semitones * 256 + detune * 4, table)
+        playbacks.append(dict(id=number, sample=entry[2], semitones=semitones, detune=detune,
+                              pitch_register=register, rate=round(rate, 3), random_tune=entry[0x1C]))
+    return playbacks
+
+
 def wav_bytes(pcm, channels, rate):
     buffer = io.BytesIO()
     with wave.open(buffer, "wb") as out:
@@ -181,14 +234,18 @@ def extract(source, output):
     source, output = Path(source).resolve(), Path(output).absolute()
     if output.exists():
         raise ValueError("output already exists")
+    driver = (source / SOUND_DRIVER).read_bytes()
+    table_offset, table = driver_fns_table(driver)
     output.parent.mkdir(parents=True, exist_ok=True)
     staging = Path(tempfile.mkdtemp(prefix=".audio-", dir=output.parent))
-    manifest = dict(schema=1, dtpk_nominal_rate=DTPK_NOMINAL_RATE, files=[])
+    manifest = dict(schema=1, dtpk_nominal_rate=DTPK_NOMINAL_RATE,
+                    sound_driver=dict(source=SOUND_DRIVER, sha256=digest(driver), fns_table_offset=table_offset),
+                    files=[])
     page = ['<!doctype html><meta charset="utf-8"><title>Crazy Taxi audio</title>',
             '<style>body{font-family:system-ui;background:#222;color:white}div{display:inline-block;margin:6px;'
             'font-size:12px}audio{display:block;width:220px}</style>',
-            '<h1>Local audio</h1><p>ADX streams at their stored rate; DTPK samples at a nominal %d Hz '
-            '(the game sets their pitch when it plays them).</p>' % DTPK_NOMINAL_RATE]
+            '<h1>Local audio</h1><p>ADX streams at their stored rate; DTPK samples at the rate of the first '
+            'playback definition that uses them, or a nominal %d Hz if none does.</p>' % DTPK_NOMINAL_RATE]
 
     def write(relative, pcm, channels, rate):
         encoded = wav_bytes(pcm, channels, rate)
@@ -217,13 +274,17 @@ def extract(source, output):
                         loop=header["loop"], clipped=clipped, stream_sha256=digest(stream),
                         **write("%s/%04d.wav" % (folder.name, number), pcm, header["channels"], header["rate"])))
             else:
-                for item in dtpk_samples(data):
+                samples = dtpk_samples(data)
+                record["playbacks"] = dtpk_playbacks(data, len(samples), table)
+                for item in samples:
                     payload = data[item["offset"]:item["offset"] + item["size"]]
                     pcm = decode_dtpk_sample(payload, item["format"])
+                    uses = [p for p in record["playbacks"] if p["sample"] == item["id"]]
+                    rate = round(uses[0]["rate"]) if uses else DTPK_NOMINAL_RATE
                     record["sounds"].append(dict(
-                        item, channels=1, rate=DTPK_NOMINAL_RATE, samples=len(pcm) // 2,
-                        payload_sha256=digest(payload),
-                        **write("%s/%04d.wav" % (folder.name, item["id"]), pcm, 1, DTPK_NOMINAL_RATE)))
+                        item, channels=1, rate=rate, rate_source="playback %d" % uses[0]["id"] if uses else "nominal",
+                        playbacks=[p["id"] for p in uses], samples=len(pcm) // 2, payload_sha256=digest(payload),
+                        **write("%s/%04d.wav" % (folder.name, item["id"]), pcm, 1, rate)))
             manifest["files"].append(record)
         (staging / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
         (staging / "index.html").write_text("\n".join(page) + "\n")
