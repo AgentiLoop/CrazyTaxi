@@ -776,6 +776,33 @@ Assumptions and limits:
 * The roles "advertise" (attract-mode demo) and "ending" are read from the file
   names; what triggers the End files wasn't traced.
 
+## Disc label image (PNG)
+
+```sh
+python3 tools/extract_pvr.py local-assets/disc --output local-assets/pvr
+```
+
+Decodes every stand-alone `.PVR` file in the disc directory. The USA disc has one,
+`0GDTEX.PVR` (131,088 bytes), written as `0GDTEX.png` with `manifest.json` and an
+`index.html` page.
+
+Layout (decomp `model_map.pvrt_at` and `textures.decode`): an optional `GBIX`
+chunk, then `PVRT`, u32 length of the rest, u8 pixel format, u8 data type, u16 0,
+u16 width, u16 height and the pixels. `0GDTEX.PVR` has no `GBIX`; it is 256×256,
+data type 1 (square twiddled), pixel format 2 (ARGB4444), and its length field
+covers exactly the rest of the file. Pixels go through the texture tool's decoder.
+
+Checks (verified October 22, 2026 on the USA file):
+
+* The RGBA output is byte-identical to the decomp's `textures.decode` (SHA-256
+  `75d8992d…7e6d26`).
+* Its alpha forms a round label: 99.99% of pixels at radius 128 or more are
+  transparent, 92.7% inside radius 120 are opaque, and the centre pixel is
+  transparent (16 alpha levels in all).
+* Neither `1ST_READ.BIN` nor `IP.BIN` contains the name `0GDTEX`, so the game
+  code doesn't load it. Its use as the console menu's disc picture is an
+  assumption, not traced. The image has not been viewed.
+
 ## Tests and web build
 
 ```sh
@@ -783,7 +810,7 @@ PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -v
 npm run build
 ```
 
-The 122 synthetic tests include 11 disc-extractor tests for nested directories,
+The 129 synthetic tests include 11 disc-extractor tests for nested directories,
 sector padding, partial final sectors, empty files, manifest hashes, no overwrite,
 invalid descriptors, endian disagreement, out-of-track extents, cycles, unsafe
 names, duplicates, multi-extent rejection, malformed records, truncated tracks,
@@ -830,5 +857,7 @@ head quarter turn, IK reach, out-of-reach limbs, looping and a full extraction.
 The 8 recorded-drive tests cover field columns, range, unknown-bit and
 press-without-rising-edge rejection, the loader pool (order, capacity), generator
 continuations, reseeds, lost state and the call limit, and a full extraction.
+The 7 PVR tests cover header fields, the `GBIX` prefix, length and reserved-byte
+rejection, twiddled pixels and a full extraction with no overwrite.
 No disc image is required.
 The Python tests are invoked separately; `npm test` does not run them.
