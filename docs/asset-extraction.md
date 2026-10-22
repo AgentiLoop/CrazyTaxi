@@ -57,7 +57,8 @@ conversion exports the SPR banks; the character conversion assembles people and
 exports their V-format motions; the vehicle conversion assembles traffic and cabs;
 the set-object conversion places the OBJDC street props; the collision conversion
 exports the COLDC ground and wall grids; the course-line conversion exports the
-SPLDC traffic lanes with their links.
+SPLDC traffic lanes with their links; the destination-picture conversion decodes
+the LANDDC pictures with their names.
 The decomp's `tools/model_map.py` documents model/texture mappings (lines 6–50 and
 83–93). Do not apply region-specific executable addresses to this USA build
 without validating them. No upstream source or game data was copied into the
@@ -173,7 +174,8 @@ python3 tools/extract_sprites.py local-assets/disc --output local-assets/sprites
 The `SPR*.BIN` files are headerless texture data. Each one's 16-byte texture records are in
 `1ST_READ.BIN` as a run ended by an all-`0xFF` record. The run whose packed size
 equals the file's size is its table. Records pointing outside the file (one
-128×128 render target in SPRCOMM) are listed as `external` with no PNG.
+128×128 render target in SPRCOMM) are listed as `external` with no PNG. That
+record is the destination-picture texture filled from LANDDC (see below).
 
 Most sprites (448 of 687) are palettised twiddled textures: Kamui type 5 (4-bit,
 low nibble first) and type 7 (8-bit). The files hold neither palettes nor palette
@@ -578,6 +580,52 @@ Assumptions and limits:
 * The Arcade visibility lists the car's nearest course-0 point selects are not
   exported.
 
+## Destination pictures (PNG)
+
+```sh
+python3 tools/extract_landmarks.py local-assets/disc --output local-assets/landmarks
+```
+
+Runs in under a second. Writes `LANDDC1/NN.png` (Arcade) and `LANDDC2/NN.png`
+(Original), a manifest and an index page with each picture's name.
+
+`LANDDC1.AFS` and `LANDDC2.AFS` each hold 40 entries of 32,768 bytes with no
+header. The game streams one entry into a fixed buffer and re-uploads one sprite
+texture from it. That texture is the SPRCOMM record the sprite tool lists as
+`external` (texture 122: 128×128, twiddled, RGB565, buffer `0x0CE98000`). The
+tool takes the format from that record and checks it two ways: its size must
+equal the AFS entry size, and its buffer address must be a code literal next to
+the literals naming the two LANDDC files. In the USA build those literals are at
+`0x0C02E8D0`–`0x0C02E8E0`, in the loader at `0x0C02E738` (file 1 when its
+argument is 0), which reads 16 sectors and re-uploads texture 122.
+
+Names: the executable has one list of 62 destination-name pointers
+(`0x0C0EC0AC`) and a pair of city bases after it (`0x0C0EC1A4`): Arcade starts at
+name 0, Original at name 33. The landmark routine (`0x0C030868`) requests
+picture `i`, stores `i`, and later draws `base[Game_No][i]`. So every picture is
+listed with the name that formula gives.
+
+Checks and results:
+
+* 78 pictures; entry 35 of each file is all zeros and is listed as empty.
+* Entries 0–34 of both files (70 pictures) have a 2-pixel opaque white frame
+  in the decoded image. Entries 36–39 have none and may be a different kind of
+  picture. Each payload has exactly 1,008 `0xFFFF` words, which is the frame's
+  pixel count. A plain row-by-row decode is about twice as rough (mean
+  neighbouring-pixel difference 97 vs 46) for all 78 pictures.
+* Original names by the formula cover entries 0–28 exactly (29 names, ending at
+  "Camping Village"). LANDDC2 entries 29–34 are byte-identical copies of LANDDC1
+  29–34, so they look like filler. Arcade entries 0–33 have Arcade names.
+* Two runs give identical output. No picture has been visually inspected.
+
+Assumptions and limits:
+
+* Which entries a run actually requests (the customer's destination field) was
+  not traced, so the names are what the formula gives, not proven per picture.
+  The two city ranges overlap at name 33 ("Big Hills Park"), and the formula
+  gives LANDDC1 34 and 36–39 names from the Original part of the list.
+* The AFS entry number is taken to be the picture index passed to the loader.
+
 ## Tests and web build
 
 ```sh
@@ -585,7 +633,7 @@ PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -v
 npm run build
 ```
 
-The 95 synthetic tests include 11 disc-extractor tests for nested directories,
+The 100 synthetic tests include 11 disc-extractor tests for nested directories,
 sector padding, partial final sectors, empty files, manifest hashes, no overwrite,
 invalid descriptors, endian disagreement, out-of-track extents, cycles, unsafe
 names, duplicates, multi-extent rejection, malformed records, truncated tracks,
@@ -621,5 +669,8 @@ Crazy Box games. The 7 course-line tests cover counts that must follow their
 points, executable-resident points, the directory and shared load address
 (rejecting a shifted file), the longest stage-table run, the speed table from the
 masked-index code, link statistics and a full extraction with shared points,
-unreferenced bytes and per-game scenes. No disc image is required.
+unreferenced bytes and per-game scenes. The 5 destination-picture tests cover the
+streamed sprite record and its literal-pool check, the name list and city bases,
+the white frame and a full extraction with empty, unframed and shared entries.
+No disc image is required.
 The Python tests are invoked separately; `npm test` does not run them.
