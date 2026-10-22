@@ -55,7 +55,8 @@ now exports the four TEXDC banks and the model conversion exports POLDC/BINC
 geometry, the audio conversion exports ADX and DTPK sounds, and the sprite
 conversion exports the SPR banks; the character conversion assembles people and
 exports their V-format motions; the vehicle conversion assembles traffic and cabs;
-the set-object conversion places the OBJDC street props.
+the set-object conversion places the OBJDC street props; the collision conversion
+exports the COLDC ground and wall grids.
 The decomp's `tools/model_map.py` documents model/texture mappings (lines 6–50 and
 83–93). Do not apply region-specific executable addresses to this USA build
 without validating them. No upstream source or game data was copied into the
@@ -419,7 +420,83 @@ Assumptions and limits:
 * The Crazy Box mini game numbers are `MiniGame_No` values; which menu game each
   is was not checked.
 * Kinds 21–27 have models but no OBJDC record uses them; whatever places them (if
-  anything) is not traced. SPLDCn, LANDDCn and COLDCn are not read here.
+  anything) is not traced. SPLDCn and LANDDCn are not read here; COLDCn is read by
+  the collision conversion below.
+
+## Course collision (glTF 2.0 + JSON)
+
+```sh
+python3 tools/extract_collision.py local-assets/disc --output local-assets/collision
+```
+
+This takes about 5 seconds and writes, per city, a GLB view (`COLDC1.glb` Arcade,
+`COLDC2.glb` Original, `COLDC3.glb` Crazy Box with one scene per mini-game grid)
+and one JSON file per run (`arcade.json`, `original.json`,
+`crazy_box_game_NN.json`) holding the ground and wall grids the way the game walks
+them, plus `manifest.json` and `index.html`. Positions are world coordinates, the
+same space as `models/BINCn.glb`. Ground surfaces are coloured with the game's
+own debug colour for their kind; walls are red quads, poles orange prisms.
+
+* **Layout (decomp `src/collide.c`, Equivalent C).** COLDCn is loaded whole and
+  keeps absolute pointers. A grid is a 32-byte header in the executable (first and
+  last cell x and z, cells per row, rows, cell count, cell size) plus a pointer to
+  an array of cell pointers in the file. Ground cell: top, bottom, a halfword (kept
+  raw), the surface count, the surface pointers. Surface (0x4C bytes): plane a, b,
+  c, d (`y = -(a*x + c*z + d) / b`), a radius around the first corner, four corners,
+  the kind and the shape (3: a triangle of corners 1-3; 4: a quad). Wall cell: wall
+  and pole counts, then the pointers. Wall: the line a, b, d, an end point, top,
+  bottom and length; it runs from the end point to `(x - length*b, z + length*a)`,
+  as `CheckColliWallSegment`'s along-wall coordinate shows. Pole: centre, radius,
+  top, bottom.
+* **Finding it in the USA executable.** The load address is the one 64 KiB-aligned
+  word under which the cell arrays read: USA `0x0CB40000` (the staging area the
+  decomp memory map gives). Headers are found by their internal consistency;
+  a word in the executable is a cell array for a header when every cell's surfaces
+  lie in that cell's square and height range, and every surface, wall and pole is
+  listed in the cell under its centre or a neighbour of it. Arcade and Original
+  take the largest such grid in their file. Crazy Box takes, per `MiniGame_No`,
+  the cell-pointer table followed by an index table into one header table. The
+  surface kinds are the longest run of 28-byte entries named `#...` (bounce, debug
+  RGB, name): USA `0x0C08ECC0`, 22 kinds (`#road`, `#rokata`, `#kabe`, `#grass`,
+  `#shougai`, `#water`, `#ikenai`, `#puddle`, `#tuti`, `#suna`, `#hodou`, `#rock`,
+  `#jump`, `#slope`, `#sea`, `#ice`, `#high_road`, `#tosub_slop`, `#sub_slope`,
+  `#tosub_hodo`, `#sub_hodou`, `#sub_road`); `#kabe` and `#ikenai` bounce 1.0, as
+  the decomp says of kinds 2 and 6.
+* **Result.** Arcade: 17,880 surfaces, 3,607 walls (25 inert), 424 poles.
+  Original: 22,050 surfaces, 6,164 walls (316 inert), 206 poles. Crazy Box: 14
+  grid pairs for 15 mini games (games 7 and 11 share one). Inert walls have a zero
+  normal and length, so `CheckColliWallSegment` never pushes from them; they stay
+  in the JSON and are left out of the GLB.
+
+Checks:
+
+* The grids found are the ones the USA code loads. A disassembly of USA
+  `InitCollision` (`0x0C030CC4`) and `InitColliWall` (`0x0C033374`) gives Arcade
+  `0x0CD5A3D8` / header `0x0C08EC40` (walls `0x0CDF6150` / `0x0C08EC60`), Original
+  `0x0CDC1EC8` / `0x0C08EF28` (walls `0x0CE36B90` / `0x0C08EF48`) and the Crazy Box
+  tables `0x0C0EC1B0` / `0x0C0EC1EC` and `0x0C0EC600` / `0x0C0EC63C` with headers
+  from `0x0C08F1F0`; the tool finds all of them from data alone.
+* Every listed item lies within 50 units of each cell holding it (half an Arcade
+  or Original cell; the largest gap found is 50.0).
+* Placed set objects (`extract_props.py`) against a Python port of
+  `GetCollision2D` run on the Arcade and Original JSON: every object has ground
+  under it, and each kind's pivot sits a fixed height above that ground (for
+  example kind 5 at 7.5 and kind 9 at 2.0, the same in both cities). 514 of 527
+  and 483 of 505 objects are within 0.5 units of their kind's median height, 410
+  and 397 within 0.01. Two independent files agree.
+* All 3 GLBs pass the Khronos `gltf-validator` with 0 errors and 0 warnings, and
+  two runs give identical output. Nothing has been visually inspected.
+
+Assumptions and limits:
+
+* Corners need not be planar: the largest gap between a corner and its plane is
+  4.4 units in Arcade (0.04 in Original). The game takes heights from the plane,
+  and so should a remake.
+* The ground cell's halfword at `+0x08` is kept raw; its meaning is not known.
+* `InitColliWall` has a fourth case (city mode -1) whose header in the USA build
+  is text, not a grid; it is not exported.
+* Collision objects that move (cars, set objects, the extra boxes `InitColliWall`
+  builds afterwards) are not part of these files.
 
 ## Tests and web build
 
@@ -428,7 +505,7 @@ PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -v
 npm run build
 ```
 
-The 78 synthetic tests include 11 disc-extractor tests for nested directories,
+The 88 synthetic tests include 11 disc-extractor tests for nested directories,
 sector padding, partial final sectors, empty files, manifest hashes, no overwrite,
 invalid descriptors, endian disagreement, out-of-track extents, cycles, unsafe
 names, duplicates, multi-extent rejection, malformed records, truncated tracks,
@@ -455,6 +532,10 @@ wheel/mirror/level rules, cab-table discovery and set lengths, and multi-scene G
 with shared meshes. The 6 set-object tests cover record chains and their
 rejection (count mismatch, pointers past the loaded bytes, empty files), the
 load-address search, the kind table and spheres, the exact-length model table and
-array bounds, and the Y-then-X rotation against the SH-4 matrices. No disc image
-is required.
+array bounds, and the Y-then-X rotation against the SH-4 matrices. The 10
+collision tests cover shortest exact float text, header consistency, the kind
+table, wall ends against `CheckColliWallSegment`, ground grids (shifted or
+rescaled headers, surfaces outside their cell, items missing from their cell),
+inert walls, winding, the largest-grid rule and a full extraction with shared
+Crazy Box games. No disc image is required.
 The Python tests are invoked separately; `npm test` does not run them.
