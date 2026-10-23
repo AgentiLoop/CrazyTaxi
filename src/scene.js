@@ -5,34 +5,66 @@ import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 
 const loader = new GLTFLoader();
 
+// KHR_materials_variants (the traffic cars' paints, "paint_NN"): three.js has no
+// built-in support, so collect each mesh's variant materials by name into
+// gltf.variants: Map<mesh name, Map<variant name, material>>.
+loader.register((parser) => ({
+  name: 'KHR_materials_variants',
+  afterRoot(gltf) {
+    const ext = parser.json.extensions && parser.json.extensions.KHR_materials_variants;
+    gltf.variants = new Map();
+    if (!ext) return;
+    const names = ext.variants.map((v) => v.name);
+    const pending = [];
+    for (const scene of gltf.scenes) {
+      scene.traverse((o) => {
+        const m = o.userData.gltfExtensions && o.userData.gltfExtensions.KHR_materials_variants;
+        if (!o.isMesh || !m) return;
+        const byName = new Map();
+        gltf.variants.set(o.name, byName);
+        for (const map of m.mappings) {
+          pending.push(parser.getDependency('material', map.material).then((mat) => {
+            for (const v of map.variants) byName.set(names[v], mat);
+          }));
+        }
+        delete o.userData.gltfExtensions;
+      });
+    }
+    return Promise.all(pending);
+  },
+}));
+
 export function loadGltf(url, onProgress) {
   return new Promise((resolve, reject) => loader.load(url, resolve, onProgress, reject));
 }
 
-/** Replace the PBR materials with unlit ones (the game has no real-time lighting on the city). */
-export function makeUnlit(root) {
-  const cache = new Map();
+/** An unlit copy of a glTF material (the game has no real-time lighting on the city). */
+export function toUnlit(m, vertexColors, cache) {
+  let u = cache && cache.get(m);
+  if (!u) {
+    u = new THREE.MeshBasicMaterial({
+      map: m.map || null,
+      color: m.color,
+      vertexColors,
+      transparent: m.transparent,
+      alphaTest: m.alphaTest,
+      opacity: m.opacity,
+      side: m.side,
+      depthWrite: m.depthWrite,
+    });
+    u.name = m.name;
+    if (cache) cache.set(m, u);
+  }
+  return u;
+}
+
+/** Replace the PBR materials with unlit ones. */
+export function makeUnlit(root, cache = new Map()) {
   root.traverse((o) => {
     if (!o.isMesh) return;
+    const vc = !!o.geometry.attributes.color;
     const mats = Array.isArray(o.material) ? o.material : [o.material];
-    const out = mats.map((m) => {
-      let u = cache.get(m);
-      if (!u) {
-        u = new THREE.MeshBasicMaterial({
-          map: m.map || null,
-          color: m.color,
-          vertexColors: !!o.geometry.attributes.color,
-          transparent: m.transparent,
-          alphaTest: m.alphaTest,
-          opacity: m.opacity,
-          side: m.side,
-          depthWrite: m.depthWrite,
-        });
-        u.name = m.name;
-        cache.set(m, u);
-      }
-      return u;
-    });
+    const out = mats.map((m) => toUnlit(m, vc, cache));
     o.material = Array.isArray(o.material) ? out : out[0];
   });
   return root;
@@ -59,5 +91,11 @@ export class ChaseCamera {
     this.target.set(car.pos.x + f.x * 25, car.pos.y + 12, car.pos.z + f.z * 25);
     this.camera.position.copy(this.eye);
     this.camera.lookAt(this.target);
+  }
+
+  /** The horizontal field of view in degrees (the game's clipping angle). */
+  horizontalFov() {
+    const v = this.camera.fov * Math.PI / 360;
+    return Math.atan(Math.tan(v) * this.camera.aspect) * 360 / Math.PI;
   }
 }

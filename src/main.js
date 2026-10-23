@@ -1,6 +1,7 @@
-// Crazy Taxi in three.js: the Arcade city, its set objects, the cab driven by the
-// game's own physics (exec_CarMain running in an SH-4 interpreter, src/dc-car.js)
-// over the game's collision, and the fare loop (customers, time, cash).
+// Crazy Taxi in three.js: the Arcade city, its set objects, the cab and the
+// traffic driven by the game's own code (exec_CarMain, trafficControl and the
+// traffic events running in an SH-4 interpreter, src/dc-car.js) over the game's
+// collision, and the fare loop (customers, time, cash).
 // Assets come from local-assets/ (written by tools/extract_all.py; never bundled).
 import * as THREE from 'three';
 import { Collision, KIND_NAMES } from './collision.js';
@@ -12,6 +13,7 @@ import { GameSystem } from './game.js';
 import { Customers } from './customers.js';
 import { CustomerView } from './customer-view.js';
 import { Hud, HUD_CSS } from './hud.js';
+import { TrafficView } from './traffic-view.js';
 
 const ASSETS = 'local-assets/';
 const params = new URLSearchParams(location.search);
@@ -60,10 +62,11 @@ function progress(label) {
 async function main() {
   say('Loading collision...');
   const files = carFiles(GAME_NO);
-  const [colJson, courses, customerManifest, exe, courseBytes, collisionBytes] = await Promise.all([
+  const [colJson, courses, customerManifest, vehicleManifest, exe, courseBytes, collisionBytes] = await Promise.all([
     fetchJson(city.collision),
     fetchJson(city.collision.replace('collision/', 'courses/')),
     fetchJson('customers/manifest.json'),
+    fetchJson('vehicles/manifest.json'),
     fetchBytes(files.exe), fetchBytes(files.courses), fetchBytes(files.collision),
   ]);
   const collision = new Collision(colJson);
@@ -109,6 +112,7 @@ async function main() {
   const gs = new GameSystem();
   let customers;
   const view = new CustomerView(scene, ASSETS, collision);
+  const traffic = new TrafficView(scene, ASSETS, vehicleManifest);
   const style = document.createElement('style');
   style.textContent = HUD_CSS;
   document.head.append(style);
@@ -119,6 +123,7 @@ async function main() {
     gs.reset();
     customers = new Customers(customerSet, stopSet, line, cityName);
     view.clear();
+    traffic.clear();
   }
   restart();
 
@@ -140,6 +145,8 @@ async function main() {
     if (state.cameraPressed) chase.mode = (chase.mode + 1) % 2;
     let steps = 0;
     events.length = 0;
+    // entryCarPut culls the traffic with the camera (the last frame's view).
+    car.setCamera(camera.matrixWorldInverse.elements, chase.horizontalFov());
     while (acc >= STEP && steps < 6) {
       gs.tick();
       car.hold = !gs.controlOn || customers.holding;
@@ -165,6 +172,7 @@ async function main() {
 
     customers.events.length = 0;
     customers.events.push(...events);
+    traffic.update(car.cars);
     view.update(customers, car, dt);
     chase.update(car, dt);
     renderer.render(scene, camera);
@@ -173,14 +181,15 @@ async function main() {
     if (now - fpsT > 500) { fps = Math.round(frames * 1000 / (now - fpsT)); frames = 0; fpsT = now; }
     hud.update(gs, customers, car, events,
       `${Math.round(car.kmh())} km/h  ${car.gear === 0 ? 'R' : 'D' + car.gear}  ${Math.round(car.rpm)} rpm  ${KIND_NAMES[car.groundKind] || '-'}  ` +
-      `(${car.pos.x.toFixed(0)}, ${car.pos.y.toFixed(0)}, ${car.pos.z.toFixed(0)})  line ${customers.carLine}  lv ${gs.level}  ${fps} fps`);
+      `(${car.pos.x.toFixed(0)}, ${car.pos.y.toFixed(0)}, ${car.pos.z.toFixed(0)})  line ${customers.carLine}  lv ${gs.level}  ` +
+      `traffic ${car.carCount} (${traffic.drawn} drawn, level ${car.trafficLevel})  ${fps} fps`);
   }
   requestAnimationFrame(frame);
 
   // For tests and probes.
   window.__game = {
     car, collision, scene, camera, chase, renderer, cityName, wheelRadius: WHEEL_RADIUS,
-    gs, get customers() { return customers; }, view, restart,
+    gs, get customers() { return customers; }, view, traffic, restart,
   };
 }
 

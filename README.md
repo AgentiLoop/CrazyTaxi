@@ -25,17 +25,34 @@ the landmark (the arrow and picture show where) to drop them off.
   land on `#road` within 2 units.
 * `src/start.js` - the start spots and headings `init_CarMain` uses (Arcade:
   course 0's last point moved 135 along z, heading 0x5000; Original fixed values).
-* `src/dc-car.js` + `src/sh4.js` - the cab is driven by the game's own code:
-  `init_CarMain` and `exec_CarMain` from `1ST_READ.BIN` (carGearbox,
-  carWheelForces, carAngularMotion, carWheelCollision, carGroundCheck...) run in
-  a small SH-4 interpreter over the disc's course points (`SPLDCn.BIN`) and
-  collision (`COLDCn.BIN`) at their Dreamcast addresses, with the drawing,
-  sound, rumble and effects calls stubbed. Every frame matches the decomp's
+* `src/dc-car.js` + `src/sh4.js` - the cab and the traffic are driven by the
+  game's own code: `init_CarMain` / `exec_CarMain` (carGearbox, carWheelForces,
+  carAngularMotion, carWheelCollision, carGroundCheck...), `entryCarPut`,
+  `trafficControl` (where cars appear and vanish: a circle of 1100 units around a
+  point 500 ahead of the cab, sections of 15 course points, the density level),
+  `nlExecuteEvent` (every traffic car, train, cable car and signal is an event:
+  pcarDrive, carSteering, carResistance, carBalance, the course occupancy grid)
+  and `ExecColliObj` (the collision boxes: the cab hits the traffic and the
+  traffic hits back) from `1ST_READ.BIN` run in a small SH-4 interpreter over the
+  disc's course points (`SPLDCn.BIN`) and collision (`COLDCn.BIN`) at their
+  Dreamcast addresses, with the drawing, sound, rumble and effects calls
+  stubbed. Every frame - the cab and every traffic car - matches the decomp's
   SH-4 simulator bit for bit (`tests/fixtures/car-trace-*.json`, recorded by
-  `tools/car_trace.py`). The file documents the Car_Data fields the game uses
-  (position +0x78, angles +0x84, speed +0x15C in units per frame, gear +0x120,
-  the four wheel records at +0x1A0 - all four wheels steer) and the pad
-  mapping (TaxiSW: stick, triggers, B = Drive, A = Reverse).
+  `tools/car_trace.py`; the simulator's 64-bit `fmov` pairs are corrected there:
+  the SH-4 keeps `FR[2k]` at the lower address, which is how `nlPushMatrix`'s two
+  load paths agree and how `MultiRot4Vec` builds a rotation). The file documents
+  the Car_Data fields the game uses (position +0x78, angles +0x84, speed +0x15C
+  in units per frame, gear +0x120, the four wheel records at +0x1A0 - all four
+  wheels steer, the collision object at +0x00 whose rotation `putPlayerCar`'s
+  `GetRotVec` stores), the traffic car record (+0x78 type, +0x7C colour, +0x84
+  flags, +0x8C position, +0xA4 angles, +0xC8 brake, +0xCC speed, +0xD4 course
+  point) and the pad mapping (TaxiSW: stick, triggers, B = Drive, A = Reverse).
+* `src/traffic-view.js` - the traffic drawn as `putCarModel` draws it: the
+  extracted vehicle models (`local-assets/vehicles/traffic`, near/far detail by
+  the game's 400 unit rule, the camera's clipping cone and 1800 unit draw
+  distance applied by `entryCarPut` itself from the three.js camera), the body
+  tinted with the car's colour (KHR_materials_variants paints), lifted and tilted
+  by its suspension, wheels spun by 0.2 x the speed, brake lamps.
 * `src/game.js` - the run's numbers, ported from the USA executable's GSystem
   code: 50 s start (option table 0x0C0896C0), a customer's time
   `int(route x 0.11 + 240 + option) x minuteScale + levelExtra`, the fare
@@ -60,7 +77,8 @@ the landmark (the arrow and picture show where) to drop them off.
 * `tools/browser-check.mjs` - headless Chrome smoke run (drives, then runs one
   fare by teleporting to a customer and their stop; screenshots).
 
-Not yet: traffic, pedestrians, the passenger in the cab and the get-in/get-out
-cut, the game's camera, HUD sprites, sound, Crazy Box.
+Not yet: pedestrians, the passenger in the cab and the get-in/get-out cut, the
+game's camera, the trick bonuses' display (Crazy Through etc. are counted:
+`car.tricks`), traffic horns and turn signals, HUD sprites, sound, Crazy Box.
 
 Asset extraction is documented in [docs/asset-extraction.md](docs/asset-extraction.md).

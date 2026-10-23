@@ -417,12 +417,15 @@ export class SH4 {
       }
       throw new Error(`SH4: fmov ${op.toString(16)}`);
     }
-    // SZ = 1: register pairs; an odd number names XDn (the other bank).
+    // SZ = 1: register pairs; an odd number names XDn (the other bank). FR[2k]
+    // moves to and from the lower address, FR[2k+1] the upper one (the SH-4 keeps
+    // the high word of a double first in memory): nlPushMatrix's two paths - 16
+    // single loads or 8 pair loads of the same matrix - agree only this way.
     const bank = (k) => (k & 1) ? (16 - this.fb) : this.fb;
     const get = (k) => { const b = bank(k) + (k & 14); return [this.fbits[b], this.fbits[b + 1]]; };
     const put = (k, hi, lo) => { const b = bank(k) + (k & 14); this.fbits[b] = hi; this.fbits[b + 1] = lo; };
-    const load = (a) => [this.r32(a + 4), this.r32(a)];
-    const store = (a, hi, lo) => { this.w32(a, lo); this.w32(a + 4, hi); };
+    const load = (a) => [this.r32(a), this.r32(a + 4)];
+    const store = (a, hi, lo) => { this.w32(a, hi); this.w32(a + 4, lo); };
     switch (lo4) {
       case 0xc: { const [h, l] = get(m); put(n, h, l); return; }
       case 8: { const [h, l] = load(r[m]); put(n, h, l); return; }

@@ -30,6 +30,8 @@ const snap = () => page.evaluate(() => {
     pos: { ...c.pos }, kmh: c.kmh(), kind: c.groundKind, onGround: c.onGround, recoveries: c.recoveries, heading: c.heading,
     gs: { state: g.gs.state, time: g.gs.time, cash: g.gs.cash, aboard: g.gs.aboard, customerTime: g.gs.customerTime, level: g.gs.level, customers: g.gs.customers },
     waiting: cs.records.filter((r) => r.state === 1).length, live: g.view.live.size, rider: cs.rider ? cs.rider.index : null,
+    traffic: { cars: c.carCount, drawn: g.traffic.drawn, instances: g.traffic.instances.size, level: c.trafficLevel,
+      types: [...new Set(c.cars.map((t) => t.type))].sort((a, b) => a - b) },
     hud: { clock: document.getElementById('hud-clock').textContent, cash: document.getElementById('hud-cash').textContent,
       big: document.getElementById('hud-big').hidden ? null : document.getElementById('hud-big').textContent,
       dest: document.getElementById('hud-dest').hidden ? null : document.getElementById('hud-dest-name').textContent,
