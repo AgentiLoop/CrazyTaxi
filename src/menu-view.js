@@ -51,15 +51,21 @@ export class MenuView {
     return c;
   }
 
-  /** @param {object[]} draws DreamcastMenu.draws */
-  render(draws) {
+  /**
+   * @param {object[]} draws DreamcastMenu.draws
+   * @param {{background?: number, scene?: HTMLCanvasElement|null}} [under] the clear colour (ARGB) and a
+   *   3D picture (SelectView) drawn before the sprites
+   */
+  render(draws, under = {}) {
     const { canvas, ctx } = this;
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.globalAlpha = 1;
-    ctx.fillStyle = '#000';
+    const bg = under.background ?? 0;
+    ctx.fillStyle = `rgb(${(bg >>> 16) & 255},${(bg >>> 8) & 255},${bg & 255})`;
     ctx.fillRect(0, 0, canvas.width, canvas.height);
+    if (under.scene) ctx.drawImage(under.scene, 0, 0, canvas.width, canvas.height);
     const k = canvas.width / SCREEN_W;
-    const sorted = draws.map((d, i) => [d, i]).sort((a, b) => a[0].depth - b[0].depth || a[1] - b[1]);
+    const sorted = draws.filter((d) => d.kind !== 'human').map((d, i) => [d, i]).sort((a, b) => a[0].depth - b[0].depth || a[1] - b[1]);
     for (const [d] of sorted) {
       const im = this.image(d.texture);
       if (!im || d.alpha <= 0) continue;

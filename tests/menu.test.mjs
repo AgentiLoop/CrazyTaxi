@@ -80,6 +80,39 @@ test('every sprite the menu draws has a texture in the sprite manifest; glyphs a
   assert.ok(sprites > 1000 && glyphs > 200, `${sprites} sprites, ${glyphs} glyphs`);
 });
 
+const MOTIONS = new URL('disc/MOTDC.BIN', ROOT);
+
+test('the driver select (MOTDC.BIN): after ARCADE the game shows its drivers, right changes the driver, A decides, the pick motion plays, result.cab', { skip: !have || !existsSync(MOTIONS) }, () => {
+  const menu = new DreamcastMenu(new Uint8Array(readFileSync(EXE)), { motions: new Uint8Array(readFileSync(MOTIONS)) });
+  for (let i = 0; i < 90; i++) menu.update(0);
+  press(menu, PAD.A);                              // ARCADE
+  press(menu, PAD.A, 60);                          // PLAY BY ARCADE RULES (the menu fades, then the select; the pad works from its 16th frame)
+  assert.equal(menu.screen, 'select');
+  assert.equal(menu.result, null);
+  const figure = () => menu.draws.find((d) => d.kind === 'human');
+  assert.equal(figure().character, 0x3b);          // the first driver (characters/manifest.json select_screen)
+  assert.equal(menu.select().cab, 0);
+  assert.equal(menu.select().background, 0xFFE64023);
+  assert.ok(menu.draws.filter((d) => d.kind === 'sprite').length > 20);
+  const count = Number(lines(menu).find((l) => /^\d+$/.test(l)));
+  assert.ok(count >= 13 && count <= 15, `the count ${count}`);
+  const tiles = menu.draws.filter((d) => d.kind === 'sprite').map((d) => d.texture);
+  press(menu, PAD.RIGHT, 30);
+  assert.equal(menu.select().cab, 1);
+  assert.equal(figure().character, 0x3c);
+  assert.notDeepEqual(menu.draws.filter((d) => d.kind === 'sprite').map((d) => d.texture), tiles, 'the driver\'s card changes');
+  const m = figure().matrix;
+  assert.ok(Math.abs(m[12] - 12) < 1e-3 && Math.abs(m[14] + 33) < 1e-3, `the figure stands at x 12, z -33: ${m}`);
+  assert.deepEqual(menu.view().slice(12, 15), [0, -10, 0]);   // CarSel_Camera: the eye 10 up
+  const p = menu.projection();                                 // nlPerspective(0x1D28, 4/3, 0.3, 300)
+  assert.ok(Math.abs(p[5] - 1 / Math.tan(0x1D28 / 65536 * Math.PI)) < 1e-4 && Math.abs(p[0] * 4 / 3 - p[5]) < 1e-4 && p[11] === -1, `${p}`);
+  menu.update(PAD.A);
+  assert.equal(menu.select().state, 1);
+  let frames = 0;
+  while (menu.update(0)) assert.ok(++frames < 600, 'the pick motion ends');
+  assert.deepEqual(menu.result, { mode: 0, item: 0, cab: 1, reverse: 0 });
+});
+
 test('the title: the logo slides in, PRESS START BUTTON blinks, it waits for START, then the top menu; EXIT comes back', { skip: !have }, () => {
   const menu = new DreamcastMenu(new Uint8Array(readFileSync(EXE)), { title: true });
   assert.equal(menu.screen, 'title');

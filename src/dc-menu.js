@@ -31,6 +31,18 @@
 // handler moves on to it (sub modes 0-5), the title starts again (sub mode 6,
 // init_Title2). START on the title goes to the menu (GotoMenu, as the game does);
 // EXIT in the menu comes back to the title (callGoBackAdvertise: sub mode 8).
+//
+// The driver select (with opts.motions = MOTDC.BIN, which the game loads at 0x0C880000
+// during the SEGA logo): after ARCADE or ORIGINAL the game goes on to MainMode 1, sub
+// mode 4 (gameState4: nd_CarSelInit) and 5 (gameState5: nd_CarSelExec every frame,
+// called with the cab number's address 0x0C177208): the backdrop, the driver's name
+// and card, the 15 second count, left/right to change the driver, A to decide, the
+// driver's pick motion, then sub mode 0 (the game starts) - `result.cab`. The driver
+// figure is captured from humanDraw(motion, character, frame) with XMTRX, its world
+// matrix; the camera is the view matrix at 0x0C2B0830 and nd_CarSelInit's
+// nlPerspective (0x1D28 = 41 degrees vertical, 4:3, 0.3 - 300); the clear colour comes
+// from CarSel_SetBackColor (0x0C073850's ARGB). The Crazy Box skips the driver select
+// in the game too (menuSetMode sets sub mode 0 for it).
 import { SH4 } from './sh4.js';
 
 const EXE_BASE = 0x0C010000;
@@ -50,7 +62,11 @@ const G = {
   glyphVTop: 0x0C08CBEC, glyphVBottom: 0x0C08CC18,   // per glyph row: the v of the top and the bottom edge
   textColour: 0x0C0EC020,             // pfColor: the vertices' ARGB
   textZ: 0x0C0EBFD8,                  // the glyph quad's z (pfSetZ)
+  cab: 0x0C177208, reverse: 0x0C17720C, // the driver (0-3; +4 with the bike command) and the reverse command
+  selectState: 0x0C2A5148,            // nd_CarSelExec: 0 choosing, 1 decided, 2/3 the pick motion, 4 done
+  view: 0x0C2B0830,                   // the view matrix (column major)
 };
+const MOTIONS = 0x0C880000;           // MOTDC.BIN's load address
 
 const FN = {
   initMatrixStack: 0x0C0765E0,
@@ -60,15 +76,22 @@ const FN = {
   sprPut: 0x0C07D018, putc: 0x0C03055E,
   fileLoad: 0x0C02D4E2,
   soundRequest: 0x0C071338,
+  gameState4: 0x0C02C3B4, gameState5: 0x0C02C3F2,   // MainMode 1's driver select (table 0x0C08A554)
+  motionInit: 0x0C06A394,             // after MOTDC.BIN's load
+  humanDraw: 0x0C0689D4,
+  backColour: 0x0C073850,             // the clear colour (ARGB x 3)
 };
 const STUBS = [
   0x0C07CAC8, 0x0C07CF16,             // sprite bank uploads (table, selectors)
   0x0C072C90,                         // the sprite numbers' release
   0x0C07E564,                         // waits on the sound driver's register (0xA08000B4)
   0x0C03FE1C,                         // callLoadData: the memory card load at start
+  0x0C02D95C, 0x0C02D75A, 0x0C02D9BE, // the songs: play, stop all, fade
+  0x0C02E5CA,                         // gdc_CourseStartLoadReq (the city's load)
 ];
 const MIDDLEWARE = [0x0C140000, 0x0C180000];
 const MATRIX_STACK = 0x0C1BF7B8, MATRIX_STACK_SIZE = 16;
+const MATRIX_SLOTS = 0x0C2B067C;      // the stacks' descriptors (12 bytes: u16 depth, u16 max, base, current)
 const IDENTITY = [0x3F800000, 0, 0, 0, 0, 0x3F800000, 0, 0, 0, 0, 0x3F800000, 0, 0, 0, 0, 0x3F800000];
 const TURN = Math.PI * 2 / 65536;
 
@@ -103,17 +126,33 @@ export class DreamcastMenu {
     cpu.hooks.set(FN.putc, (c) => { this.glyph(c.r[4] << 24 >> 24); return false; });
     cpu.hooks.set(FN.soundRequest, (c) => { this.sounds.push(c.r[4] >>> 0); return 0; });
     cpu.hooks.set(FN.menuSetMode, () => {
-      this.result = { mode: cpu.r32(G.menu + 4), item: cpu.r32(G.menu + 8) };
+      const choice = { mode: cpu.r32(G.menu + 4), item: cpu.r32(G.menu + 8) };
+      if (this.motions && choice.mode < 2) this.choice = choice;   // on to the driver select
+      else this.result = choice;
       return 0;
     });
+    cpu.hooks.set(FN.humanDraw, (c) => {
+      const matrix = new Array(16);
+      for (let i = 0; i < 16; i++) matrix[i] = c.xf(i);
+      this.draws.push({ kind: 'human', motion: c.r[4] >>> 0, character: c.r[5], frame: c.r[6], matrix });
+      return false;
+    });
+    cpu.hooks.set(FN.backColour, (c) => { this.background = c.r[4] >>> 0; return false; });
     this.english = opts.english !== false;
-    /** @type {object[]} this frame's sprites and glyphs, in the order the game drew them */
+    /** @type {object[]} this frame's sprites, glyphs and figures, in the order the game drew them */
     this.draws = [];
     this.files = [];
     this.sounds = [];
     this.result = null;
+    this.choice = null;
+    this.background = 0xFF000000;
     this.held = 0;
     this.frames = 0;
+    this.motions = !!opts.motions;
+    if (opts.motions) {
+      cpu.load(MOTIONS, opts.motions);
+      this.call(FN.motionInit);
+    }
     if (opts.title) this.title();
     else this.init();
   }
@@ -126,6 +165,8 @@ export class DreamcastMenu {
     this.call(FN.initMatrixStack, { r4: MATRIX_STACK, r5: MATRIX_STACK_SIZE });
     this.call(FN.pfInit, { r4: 0 });     // the text printer (font 0, aspect 1, size 1)
     this.result = null;
+    this.choice = null;
+    this.background = 0xFF000000;
     this.held = 0;
   }
 
@@ -180,17 +221,45 @@ export class DreamcastMenu {
       if (cpu.r32(G.mainMode) === 3) this.call(FN.initMenu);   // START: GotoMenu
     } else if (mode === 3) {
       this.call(FN.menu);
+      if (this.choice) {                // menuSetMode's part: MainMode 1, sub mode 4 (gameState4)
+        cpu.w32(G.mainMode, 1);
+        cpu.w32(G.subMode, 4);
+        this.call(FN.gameState4);
+      }
+    } else if (mode === 1 && this.choice) {
+      this.call(FN.gameState5);         // nd_CarSelExec(0x0C177208)
+      if (cpu.r32(G.subMode) === 0) {   // decided: the game starts
+        this.result = { ...this.choice, cab: cpu.r32(G.cab), reverse: cpu.r32(G.reverse) };
+      }
     } else {
       return false;
     }
     cpu.w32(G.frameCounter, cpu.r32(G.frameCounter) + 1);
     this.frames++;
-    return !this.result && (cpu.r32(G.mainMode) === 0 || cpu.r32(G.mainMode) === 3);
+    return !this.result && [0, 1, 3].includes(cpu.r32(G.mainMode));
   }
 
-  /** 'title' (MainMode 0) or 'menu' (MainMode 3). */
+  /** 'title' (MainMode 0), 'menu' (MainMode 3) or 'select' (the driver select, MainMode 1). */
   get screen() {
-    return this.cpu.r32(G.mainMode) === 0 ? 'title' : 'menu';
+    const mode = this.cpu.r32(G.mainMode);
+    return mode === 0 ? 'title' : mode === 1 ? 'select' : 'menu';
+  }
+
+  /** The driver select: the driver shown (cab number), its state (0 choosing .. 4 done), the clear colour. */
+  select() {
+    const cpu = this.cpu;
+    return { cab: cpu.r32(G.cab), state: cpu.r32(G.selectState), background: this.background };
+  }
+
+  /** The camera of the driver select (CarSel_Camera): the view matrix, column major. */
+  view() {
+    return Array.from({ length: 16 }, (_, i) => this.cpu.rf(G.view + 4 * i));
+  }
+
+  /** nd_CarSelInit's nlPerspective: the projection (matrix stack slot 3's current matrix), column major. */
+  projection() {
+    const m = this.cpu.r32(MATRIX_SLOTS + 12 * 3 + 8);
+    return Array.from({ length: 16 }, (_, i) => this.cpu.rf(m + 4 * i));
   }
 
   /** The menu state: depth and the item chosen at each depth (GetMenuMode). */

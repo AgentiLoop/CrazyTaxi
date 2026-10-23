@@ -1,13 +1,14 @@
-// Start-up: the game's title screen and menu (src/dc-menu.js, drawn by
-// src/menu-view.js), then the city the player chose (src/main.js reads ?city=). With
-// ?city= in the address the title and the menu are skipped (the browser checks start
-// a city directly).
+// Start-up: the game's title screen, menu and driver select (src/dc-menu.js, drawn by
+// src/menu-view.js and src/select-view.js), then the city the player chose (src/main.js
+// reads ?city=; the chosen driver goes into ?cab=). With ?city= in the address the
+// title and the menu are skipped (the browser checks start a city directly).
 //
 // Keys in the menu, as the Dreamcast pad: arrows / WASD = d-pad, Z / Enter / Space =
 // A (choose), X / Escape / Backspace = B (back), Q = Start. On the title, which only
 // takes START on the Dreamcast, the A keys press START too.
 import { DreamcastMenu, PAD, MODES } from './dc-menu.js';
 import { MenuView } from './menu-view.js';
+import { SelectView } from './select-view.js';
 import { letterbox } from './scene.js';
 
 const ASSETS = 'local-assets/';
@@ -32,16 +33,18 @@ async function fetchOk(path) {
 /** Run the menu until a city is chosen; resolves with the menu's result. */
 async function runMenu() {
   status.textContent = 'Loading the menu...';
-  const [exe, manifest] = await Promise.all([
+  const [exe, manifest, motions] = await Promise.all([
     fetchOk('disc/1ST_READ.BIN').then((r) => r.arrayBuffer()).then((b) => new Uint8Array(b)),
     fetchOk('sprites/manifest.json').then((r) => r.json()),
+    fetchOk('disc/MOTDC.BIN').then((r) => r.arrayBuffer()).then((b) => new Uint8Array(b)),
   ]);
-  const menu = new DreamcastMenu(exe, { title: true });
+  const menu = new DreamcastMenu(exe, { title: true, motions });
   const canvas = document.createElement('canvas');
   canvas.id = 'menu';
   canvas.style.position = 'fixed';
   document.body.append(canvas);
   const view = new MenuView(canvas, ASSETS, manifest);
+  const select = new SelectView(ASSETS);
   const resize = () => {
     const box = letterbox(innerWidth, innerHeight);
     const dpr = Math.min(devicePixelRatio, 2);
@@ -82,7 +85,10 @@ async function runMenu() {
         if (menu.result) console.warn(`menu: ${MODES[menu.result.mode]} is not playable yet`);
         menu.init();
       }
-      view.render(menu.draws);
+      view.render(menu.draws, menu.screen === 'select' ? {
+        background: menu.select().background,
+        scene: select.render(menu.draws, menu.view(), menu.projection(), canvas.width, canvas.height),
+      } : {});
       requestAnimationFrame(frame);
     }
     requestAnimationFrame(frame);
@@ -92,7 +98,7 @@ async function runMenu() {
 async function boot() {
   if (!new URLSearchParams(location.search).has('city')) {
     const choice = await runMenu();
-    history.replaceState(null, '', `?city=${choice.city}`);
+    history.replaceState(null, '', `?city=${choice.city}&cab=${choice.cab}`);
     status.style.display = '';
   }
   await import('./main.js');
