@@ -66,10 +66,25 @@ export function gameTimeText(frames) {
   };
 }
 
+// The marks' outline is drawn outward only: the stroke goes under the fill (paint-order),
+// so only its outer half shows, and it is twice the digits' outline (set by load()).
+const MARK_EM = 0.8;    // the marks' font size, in the clock's em
 export const DIGITS_CSS = `
 .cd { display: inline-block; height: 1em; overflow: visible; vertical-align: baseline; }
-.cd-mark { display: inline-block; font: 900 0.8em/1 "Arial Black", Impact, sans-serif; vertical-align: top; margin-top: -0.08em; -webkit-text-stroke: 0.06em #000; paint-order: stroke fill; text-shadow: 0.06em 0.06em 0 #000; }
+.cd-mark { display: inline-block; font: 900 ${MARK_EM}em/1 "Arial Black", Impact, sans-serif; vertical-align: top; margin-top: -0.08em; -webkit-text-stroke: var(--cd-mark-stroke, 0.09em) #000; paint-order: stroke fill; text-shadow: 0.03em 0.03em 0 #000, 0.06em 0.06em 0 #000, 0.09em 0.09em 0 #000, 0.12em 0.12em 0 #000; }
 `;
+
+// The ' and " ticks (1/100 em, y down from the clock's top): a wedge from a round top of
+// radius r1 to a round bottom of radius r2, the two circles joined by their tangents.
+const TICK = { top: 12, bottom: 40, r1: 9, r2: 6, gap: 7 };
+function tickPath(cx) {
+  const { top, bottom, r1, r2 } = TICK;
+  const s = (r1 - r2) / (bottom - top), c = Math.sqrt(1 - s * s);
+  const f = (v) => v.toFixed(2);
+  return `M${f(cx + r1 * c)} ${f(top - r1 * s)}L${f(cx + r2 * c)} ${f(bottom - r2 * s)}` +
+    `A${r2} ${r2} 0 1 1 ${f(cx - r2 * c)} ${f(bottom - r2 * s)}L${f(cx - r1 * c)} ${f(top - r1 * s)}` +
+    `A${r1} ${r1} 0 0 1 ${f(cx + r1 * c)} ${f(top - r1 * s)}Z`;
+}
 
 export class CartoonDigits {
   constructor(assets) {
@@ -87,6 +102,8 @@ export class CartoonDigits {
     const top = Math.min(...boxes.map((b) => b.y)), bottom = Math.max(...boxes.map((b) => b.y + b.h));
     this.height = bottom - top;
     this.boxes = boxes.map((b) => ({ x: b.x, y: top, w: b.w, h: this.height }));
+    // The digits' outline shows STROKE picture pixels outside the fill: the marks' the same.
+    document.documentElement.style.setProperty('--cd-mark-stroke', `${(2 * STROKE / this.height / MARK_EM).toFixed(4)}em`);
     const sprite = document.createElementNS(SVG_NS, 'svg');
     sprite.setAttribute('width', '0'); sprite.setAttribute('height', '0');
     sprite.style.position = 'absolute';
@@ -94,7 +111,7 @@ export class CartoonDigits {
     document.body.prepend(sprite);
   }
 
-  /** One glyph element: a digit as the cartoon font, anything else as outlined text. */
+  /** One glyph element: a digit as the cartoon font, ' and " as round-ended ticks, anything else as outlined text. */
   glyph(ch) {
     const n = ch.charCodeAt(0) - 48;
     let el;
@@ -105,12 +122,34 @@ export class CartoonDigits {
       const use = document.createElementNS(SVG_NS, 'use');
       use.setAttribute('href', `#cd-${n}`);
       el.append(use);
+    } else if (ch === "'" || ch === '"') {
+      el = this.tick(ch === '"' ? 2 : 1);
     } else {
       el = document.createElement('span');
       el.className = 'cd-mark';
       el.textContent = ch;
     }
     el.dataset.ch = ch;
+    return el;
+  }
+
+  /** `count` tapered ticks with round ends, in 1/100 em: the digits' outline, a stepped drop shadow. */
+  tick(count) {
+    const sw = this.height ? 200 * STROKE / this.height : 8;   // full stroke; half shows outside the fill
+    const o = sw / 2, step = 2 * TICK.r1 + TICK.gap;
+    const w = 2 * (o + TICK.r1) + (count - 1) * step;
+    let d = '';
+    for (let i = 0; i < count; i++) d += tickPath(o + TICK.r1 + i * step);
+    const shape = `d="${d}" stroke="#000" stroke-width="${sw.toFixed(2)}" stroke-linejoin="round"`;
+    let inner = '';
+    for (let i = 1; i <= 8; i++) inner += `<path ${shape} fill="#000" transform="translate(${1.2 * i} ${1.2 * i})"/>`;
+    inner += `<path ${shape} fill="currentColor" paint-order="stroke fill"/>`;
+    const el = document.createElementNS(SVG_NS, 'svg');
+    el.setAttribute('class', 'cd');
+    el.setAttribute('viewBox', `0 0 ${w.toFixed(2)} 100`);
+    el.setAttribute('overflow', 'visible');
+    el.style.width = `${(w / 100).toFixed(3)}em`;
+    el.innerHTML = inner;
     return el;
   }
 

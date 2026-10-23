@@ -138,3 +138,16 @@ test('the title: the logo slides in, PRESS START BUTTON blinks, it waits for STA
   assert.equal(menu.screen, 'title');
   assert.equal(menu.result, null);
 });
+
+test('the chosen driver drives: DreamcastCar({cab}) puts that driver (character 1-4) in the cab', { skip: !have || !existsSync(new URL('disc/COLDC2.BIN', ROOT)) }, async () => {
+  const { DreamcastCar, carFiles } = await import('../src/dc-car.js');
+  const files = carFiles(0);
+  const data = {};
+  for (const k in files) data[k] = readFileSync(new URL(files[k], ROOT));
+  for (const cab of [0, 1, 2, 3]) {
+    const car = new DreamcastCar(data, { city: 0, cab });
+    car.init();
+    for (let i = 0; i < 30; i++) car.update({ steer: 0, accel: 0, brake: 0, drive: false, reverse: false });
+    assert.ok(car.people.some((p) => p.chara === cab + 1), `cab ${cab}: ${car.people.map((p) => p.chara)}`);
+  }
+});

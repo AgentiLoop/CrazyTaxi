@@ -1,8 +1,8 @@
 // The driver select's 3D part: the driver figure the game draws with
 // humanDraw(motion, character, frame) (DreamcastMenu.draws kind 'human', with XMTRX,
 // the figure's world matrix), drawn by three.js into its own canvas that MenuView puts
-// under the 2D sprites (every sprite of the screen has 1/z >= 1, nearer than the
-// figure's ~1/33). The camera is the game's: the view matrix CarSel_Camera stores and
+// at the figure's depth (~1/33): over the driver's art (1/z ~0.002), under the help
+// bar and the timer (1/z = 1). The camera is the game's: the view matrix CarSel_Camera stores and
 // nd_CarSelInit's projection, both used as they are.
 //
 // The figure is the extracted character (local-assets/characters/characters/char_NN.glb,

@@ -60,6 +60,16 @@ export function hiresCap(search) {
 }
 export const HIRES = typeof location !== 'undefined' ? hiresCap(location.search) : 0;
 
+// H toggles the pack: the page reloads with ?hires=1 added or removed (HIRES is fixed per load).
+if (typeof addEventListener !== 'undefined') {
+  addEventListener('keydown', (e) => {
+    if (e.code !== 'KeyH' || e.repeat || e.metaKey || e.ctrlKey || e.altKey) return;
+    const params = new URLSearchParams(location.search);
+    if (HIRES) params.delete('hires'); else params.set('hires', '1');
+    location.search = params.toString();
+  });
+}
+
 /** The manifest's key ('textures/TEXDC1/0046.png') for a glTF image URI, else null. */
 export function packKey(uri) {
   const m = /(?:^|\/)(textures\/TEXDC\d\/\d+\.png)$/.exec(uri || '');
@@ -186,13 +196,20 @@ function packImage(t, texture) {
 
 /**
  * The pack's image for an extracted picture ('sprites/SPRADV/0000.png'), stored the same way
- * up as the PNG, or null (no pack, no match, or the pack's has no alpha where `original` has).
+ * up as the PNG, or null (no pack or no match). Where the pack's has no alpha but `original`
+ * has (the JPEG colour head shots, SPRCOMM 94-97), it is cut by original's alpha, scaled up.
  */
 export async function hiresImage(png, original) {
   const t = HIRES ? (await packManifest()).get(png) : null;
   const img = t ? await packImage(t) : null;
-  if (!img || (textureAlpha({ image: original }) !== 'solid' && textureAlpha({ image: img }) === 'solid')) return null;
-  return img;
+  if (!img || textureAlpha({ image: original }) === 'solid' || textureAlpha({ image: img }) !== 'solid') return img;
+  if (typeof OffscreenCanvas === 'undefined') return null;
+  const canvas = new OffscreenCanvas(img.width, img.height);
+  const ctx = canvas.getContext('2d');
+  ctx.drawImage(img, 0, 0);
+  ctx.globalCompositeOperation = 'destination-in';
+  ctx.drawImage(original, 0, 0, img.width, img.height);
+  return canvas.transferToImageBitmap();
 }
 
 /** The URL of the pack's image (upright) for an extracted picture, or null. */
@@ -231,6 +248,50 @@ async function useTexturePack(gltf) {
       texture.needsUpdate = true;
     });
   });
+  // The traffic cars' paints (tools/extract_vehicles.py): a body texture baked with the
+  // PowerVR decal-alpha rule over the paint colour and embedded, so it has no URI to
+  // match. Its material's extras name the TEXDC texture and the colour: bake the pack's
+  // image the same way.
+  const materials = await parser.getDependencies('material');
+  const baked = new Map();      // `${png}@${colour}` -> Promise<canvas | null>
+  for (const m of materials) {
+    const x = m && m.userData, colour = x && x.decal_alpha_colour;
+    if (!colour || !m.map) continue;
+    const t = entries.get(`textures/${String(x.texture_bank).replace('.BIN', '')}/${String(x.texture).padStart(4, '0')}.png`);
+    if (!t) continue;
+    const id = `${t.png}@${colour.join(',')}`;
+    const texture = m.map;
+    const image = packImage(t, texture);
+    if (!baked.has(id)) baked.set(id, image.then((img) => img && decalAlpha(img, colour)));
+    baked.get(id).then((img) => {
+      if (!img || texture.source.data === img) return;
+      textureAlphas.set(img, textureAlpha(texture));   // alpha = the paint's: unchanged
+      texture.source.data = img;
+      texture.dispose();
+      texture.minFilter = THREE.LinearMipmapLinearFilter;
+      texture.generateMipmaps = true;
+      texture.anisotropy = 4;
+      texture.needsUpdate = true;
+    });
+  }
+}
+
+/** A texture baked the PowerVR decal-alpha way: RGB = texture RGB * A + colour RGB * (1 - A), A = colour A. */
+function decalAlpha(img, colour) {
+  const w = img.width, h = img.height;
+  const canvas = typeof OffscreenCanvas !== 'undefined' && w && h ? new OffscreenCanvas(w, h) : null;
+  const ctx = canvas && canvas.getContext('2d', { willReadFrequently: true });
+  if (!ctx) return null;
+  ctx.drawImage(img, 0, 0);
+  const data = ctx.getImageData(0, 0, w, h);
+  const d = data.data, level = colour.map((c) => Math.min(255, Math.max(0, Math.round(255 * c))));
+  for (let i = 0; i < d.length; i += 4) {
+    const a = d[i + 3];
+    for (let n = 0; n < 3; n++) d[i + n] = Math.round((d[i + n] * a + level[n] * (255 - a)) / 255);
+    d[i + 3] = level[3];
+  }
+  ctx.putImageData(data, 0, 0);
+  return canvas;
 }
 
 // Draw order. The Dreamcast sorts its translucent polygons per pixel, and most of the
@@ -348,13 +409,15 @@ export function makeUnlit(root, cache = new Map()) {
  * The game's camera on a three.js camera. The Dreamcast draws a 4:3 picture whose field of
  * view (camUpdate's perspective, 60 degrees in the chase camera) spans the width; the view
  * matrix camUpdate stores is three.js's matrixWorldInverse (column major, looking down -z).
+ * The vertical view is the 4:3 picture's whatever the camera's aspect (main.js: the
+ * window's); a wider window sees more to the sides (the game's culling follows it:
+ * DreamcastCar.aspect).
  */
 export const ASPECT = 4 / 3;
 
 export class GameCamera {
   constructor(camera) {
     this.camera = camera;
-    this.camera.aspect = ASPECT;
     this._inverse = new THREE.Matrix4();
     this._fov = 0;
   }

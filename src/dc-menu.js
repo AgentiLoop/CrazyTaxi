@@ -50,6 +50,7 @@ const EXE_BASE = 0x0C010000;
 const G = {
   mainMode: 0x0C1EBF54, subMode: 0x0C1EBF58,
   frameCounter: 0x0C1EC050,
+  titleTimer: 0x0C1EBF60, titleTimer2: 0x0C0E4130,   // the title's frame counts (sub mode 7; it leaves at 309)
   startToPlay: 0x0C1EC058,            // InitSys sets 1: the title waits for START (0 = the arcade's credit screen, which leaves at once)
   taxiSW: 0x0C1EBF6C,                 // the pad: +0 held, +4 pressed, +8 released, +0xC last held, +0x10/+0x16 stick (0x8000 = centre)
   language: 0x0C29EEC8,               // 0 Japanese (sprMJAP), else English (sprMENG)
@@ -65,6 +66,8 @@ const G = {
   cab: 0x0C177208, reverse: 0x0C17720C, // the driver (0-3; +4 with the bike command) and the reverse command
   selectState: 0x0C2A5148,            // nd_CarSelExec: 0 choosing, 1 decided, 2/3 the pick motion, 4 done
   view: 0x0C2B0830,                   // the view matrix (column major)
+  menuFrom: 0x0C29EF30,               // GotoMenu: the MainMode and (+4) sub mode the menu was entered from
+  options: 0x0C2881F0, optionDefaults: 0x0C09C5C0,   // the settings (+4: the music volume, 0-8) and their defaults
 };
 const MOTIONS = 0x0C880000;           // MOTDC.BIN's load address
 
@@ -76,6 +79,18 @@ const FN = {
   sprPut: 0x0C07D018, putc: 0x0C03055E,
   fileLoad: 0x0C02D4E2,
   soundRequest: 0x0C071338,
+  // The sound (src/audio.js plays it through opts.audio). The menu sends its cursor and
+  // decide sounds straight to the driver's command ring (0x0C07EA8C, the word as
+  // Sound_Request's); the songs run (gdc_PlaySong 0x0C02D95C: the menu loop, song 0,
+  // when the menu is entered from the title or a game; the driver select's, song 2;
+  // the fades 0x0C02D9BE) down to the ADX library's ADXT_StartAfs (partition 1 = SONG01)
+  // and ADXT_SetOutVol; the voices (VOICE01 672 on entry from the title) through the voice stream calls.
+  soundCommand: 0x0C07EA8C,
+  songStreamStopAll: 0x0C02D75A, songStreamRemain: 0x0C02D7F8,
+  adxtStartAfs: 0x0C14F838, adxtSetOutVol: 0x0C15000E,
+  voiceStreamStart: 0x0C02DCFC, voiceStreamVol: 0x0C02DD14, voiceStreamPan: 0x0C02DD50,
+  voiceStreamStat: 0x0C02DBDC, voiceStreamTime: 0x0C02DC78,
+  voiceStreamStop: 0x0C02DC0C, voiceStreamStopAll: 0x0C02DC1A,
   gameState4: 0x0C02C3B4, gameState5: 0x0C02C3F2,   // MainMode 1's driver select (table 0x0C08A554)
   motionInit: 0x0C06A394,             // after MOTDC.BIN's load
   humanDraw: 0x0C0689D4,
@@ -86,7 +101,6 @@ const STUBS = [
   0x0C072C90,                         // the sprite numbers' release
   0x0C07E564,                         // waits on the sound driver's register (0xA08000B4)
   0x0C03FE1C,                         // callLoadData: the memory card load at start
-  0x0C02D95C, 0x0C02D75A, 0x0C02D9BE, // the songs: play, stop all, fade
   0x0C02E5CA,                         // gdc_CourseStartLoadReq (the city's load)
 ];
 const MIDDLEWARE = [0x0C140000, 0x0C180000];
@@ -124,7 +138,22 @@ export class DreamcastMenu {
     cpu.hooks.set(FN.fileLoad, (c) => { this.files.push(this.string(c.r[5] >>> 0)); return 0; });
     cpu.hooks.set(FN.sprPut, (c) => { this.sprite(c.r[4] >>> 0); return 0; });
     cpu.hooks.set(FN.putc, (c) => { this.glyph(c.r[4] << 24 >> 24); return false; });
-    cpu.hooks.set(FN.soundRequest, (c) => { this.sounds.push(c.r[4] >>> 0); return 0; });
+    const audio = opts.audio || null;
+    this.audio = audio;
+    const sound = (word) => { this.sounds.push(word); if (audio) audio.sound(word); };
+    cpu.hooks.set(FN.soundRequest, (c) => { sound(c.r[4] >>> 0); return 0; });
+    cpu.hooks.set(FN.soundCommand, (c) => { sound(c.r[4] >>> 0); return 0; });
+    cpu.hooks.set(FN.adxtStartAfs, (c) => { if (c.r[5] === 1) { this.songs.push(c.r[6]); if (audio) audio.songStart(c.r[6]); } return 0; });
+    cpu.hooks.set(FN.adxtSetOutVol, (c) => { if (audio) audio.songVolume(c.r[5] | 0); return 0; });
+    cpu.hooks.set(FN.songStreamStopAll, () => { if (audio) audio.songStop(); return 0; });
+    cpu.hooks.set(FN.songStreamRemain, () => (audio ? audio.songRemain() : 0x58764));
+    cpu.hooks.set(FN.voiceStreamStart, (c) => { this.voices.push(c.r[5]); if (audio) audio.voiceStart(c.r[4], c.r[5]); return 0; });
+    cpu.hooks.set(FN.voiceStreamVol, (c) => { if (audio) audio.voiceVolume(c.r[4], c.r[5] << 24 >> 24); return 0; });
+    cpu.hooks.set(FN.voiceStreamPan, () => 0);
+    cpu.hooks.set(FN.voiceStreamStat, (c) => (audio ? audio.voicePlaying(c.r[4]) : 0));
+    cpu.hooks.set(FN.voiceStreamTime, (c) => (audio ? audio.voicePlayTime(c.r[4]) : 0));
+    cpu.hooks.set(FN.voiceStreamStop, (c) => { if (audio) audio.voiceStop(c.r[4]); return 0; });
+    cpu.hooks.set(FN.voiceStreamStopAll, () => { if (audio) audio.voiceStopAll(); return 0; });
     cpu.hooks.set(FN.menuSetMode, () => {
       const choice = { mode: cpu.r32(G.menu + 4), item: cpu.r32(G.menu + 8) };
       if (this.motions && choice.mode < 2) this.choice = choice;   // on to the driver select
@@ -143,11 +172,15 @@ export class DreamcastMenu {
     this.draws = [];
     this.files = [];
     this.sounds = [];
+    this.songs = [];      // SONG01 files started
+    this.voices = [];     // VOICE01 files started
     this.result = null;
     this.choice = null;
     this.background = 0xFF000000;
     this.held = 0;
     this.frames = 0;
+    // The settings: the boot's set-up copies the defaults in (gdc_PlaySong's volume reads +4).
+    for (let i = 0; i < 16; i++) cpu.w8(G.options + i, cpu.r8(G.optionDefaults + i));
     this.motions = !!opts.motions;
     if (opts.motions) {
       cpu.load(MOTIONS, opts.motions);
@@ -217,8 +250,20 @@ export class DreamcastMenu {
     const mode = cpu.r32(G.mainMode);
     if (mode === 0) {
       if (cpu.r32(G.subMode) < 6) cpu.w32(G.subMode, 6);   // the logo and the replays: not ported, the title again
+      // The title leaves for the attract sequence after 309 frames, and coming back would
+      // slide the logo in again: wind its timers back 240 frames instead so it stays put.
+      if (cpu.r32(G.subMode) === 7 && cpu.r32(G.titleTimer) >= 300) {
+        for (const t of [G.titleTimer, G.titleTimer2]) cpu.w32(t, cpu.r32(t) - 240);
+      }
       this.call(FN.advertise);
-      if (cpu.r32(G.mainMode) === 3) this.call(FN.initMenu);   // START: GotoMenu
+      if (cpu.r32(G.mainMode) === 3) {   // START: GotoMenu (it keeps the mode it came from, which InitMenu clears)
+        const from = [cpu.r32(G.menuFrom), cpu.r32(G.menuFrom + 4)];
+        this.call(FN.initMenu);
+        // The menu's first frame starts the menu loop (song 0) only when it was entered
+        // from somewhere (0x0C03FB06) - and the voice when that was the title (sub mode 7 or 9).
+        cpu.w32(G.menuFrom, from[0]);
+        cpu.w32(G.menuFrom + 4, from[1]);
+      }
     } else if (mode === 3) {
       this.call(FN.menu);
       if (this.choice) {                // menuSetMode's part: MainMode 1, sub mode 4 (gameState4)

@@ -7,9 +7,15 @@
 // A (choose), X / Escape / Backspace = B (back), Q = Start. On the title, which only
 // takes START on the Dreamcast, the A keys press START too.
 import { DreamcastMenu, PAD, MODES } from './dc-menu.js';
-import { MenuView } from './menu-view.js';
+import { MenuView, FONTS } from './menu-view.js';
 import { SelectView } from './select-view.js';
 import { letterbox } from './scene.js';
+import { GameAudio } from './audio.js';
+// The menu's web fonts (src/menu-view.js draws its text with them).
+import '@fontsource/anton/400.css';
+import '@fontsource/archivo-black/400.css';
+import '@fontsource/roboto-condensed/700.css';
+import '@fontsource/oswald/500.css';
 
 const ASSETS = 'local-assets/';
 const STEP = 1000 / 60;
@@ -33,12 +39,22 @@ async function fetchOk(path) {
 /** Run the menu until a city is chosen; resolves with the menu's result. */
 async function runMenu() {
   status.textContent = 'Loading the menu...';
+  // The menus' sound (src/audio.js): the menu loop, the driver select's song, the cursor
+  // and decide sounds and the voice, as the menu code requests them.
+  const audio = new GameAudio(ASSETS);
   const [exe, manifest, motions] = await Promise.all([
     fetchOk('disc/1ST_READ.BIN').then((r) => r.arrayBuffer()).then((b) => new Uint8Array(b)),
     fetchOk('sprites/manifest.json').then((r) => r.json()),
     fetchOk('disc/MOTDC.BIN').then((r) => r.arrayBuffer()).then((b) => new Uint8Array(b)),
+    Promise.all(FONTS.map((f) => document.fonts.load(f))).catch(() => {}),
+    audio.load().catch((e) => console.warn(`menu audio: ${e.message}`)),
   ]);
-  const menu = new DreamcastMenu(exe, { title: true, motions });
+  // START on the title asks for the menu loop (SONG01 0, the drum beat) and the voice
+  // (VOICE01 672) at once: fetch them now so they don't start seconds late.
+  if (audio.ctx) for (const wav of ['SONG01/0000.wav', 'VOICE01/0672.wav']) audio.buffer(wav).catch(() => {});
+  const startAudio = () => audio.start();
+  for (const ev of ['keydown', 'pointerdown']) addEventListener(ev, startAudio);
+  const menu = new DreamcastMenu(exe, { title: true, motions, audio: audio.ctx ? audio : null });
   const canvas = document.createElement('canvas');
   canvas.id = 'menu';
   canvas.style.position = 'fixed';
@@ -76,6 +92,8 @@ async function runMenu() {
           removeEventListener('resize', resize);
           removeEventListener('keydown', down);
           removeEventListener('keyup', up);
+          for (const ev of ['keydown', 'pointerdown']) removeEventListener(ev, startAudio);
+          if (audio.ctx) audio.ctx.close();   // the city's own audio (src/main.js) takes over
           canvas.remove();
           resolve({ city, ...menu.result });
           return;
@@ -98,7 +116,7 @@ async function runMenu() {
 async function boot() {
   if (!new URLSearchParams(location.search).has('city')) {
     const choice = await runMenu();
-    history.replaceState(null, '', `?city=${choice.city}&cab=${choice.cab}`);
+    history.replaceState(null, '', `?city=${choice.city}&cab=${choice.cab}&rules=${choice.item}`);
     status.style.display = '';
   }
   await import('./main.js');

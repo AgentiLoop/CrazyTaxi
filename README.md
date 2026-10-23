@@ -14,7 +14,7 @@ npm test           # node --test tests/*.test.mjs (skips data tests without loca
 ```
 
 Keys: arrows / WASD drive and steer, X = Drive gear (B), Z = Reverse gear (A),
-R restart. Stop inside a customer's circle to pick them up, stop at
+R restart. Stop beside a customer (inside their circle) to pick them up, stop at
 the landmark (the arrow and picture show where) to drop them off.
 
 ## What is in the game so far
@@ -25,68 +25,94 @@ the landmark (the arrow and picture show where) to drop them off.
   land on `#road` within 2 units.
 * `src/start.js` - the start spots and headings `init_CarMain` uses (Arcade:
   course 0's last point moved 135 along z, heading 0x5000; Original fixed values).
-* `src/dc-car.js` + `src/sh4.js` - the cab, the traffic and the camera are driven by the
-  game's own code: `init_CarMain` / `exec_CarMain` (carGearbox, carWheelForces,
-  carAngularMotion, carWheelCollision, carGroundCheck...), `entryCarPut`,
-  `trafficControl` (where cars appear and vanish: a circle of 1100 units around a
-  point 500 ahead of the cab, sections of 15 course points, the density level),
-  `nlExecuteEvent` (every traffic car, train, cable car and signal is an event:
-  pcarDrive, carSteering, carResistance, carBalance, the course occupancy grid)
-  and `ExecColliObj` (the collision boxes: the cab hits the traffic and the
-  traffic hits back), `initCamera` / `camUpdate` (the chase camera: the eye eased
-  by homing vectors to 60 behind and 15 above the cab plus a smoothed speed term,
+* `src/dc-car.js` + `src/sh4.js` - the game runs by its own code. `init_CarMain` /
+  `exec_CarMain` (carGearbox, carWheelForces, carAngularMotion, carWheelCollision,
+  carGroundCheck...), `entryCarPut`, `trafficControl` (where cars appear and
+  vanish: a circle of 1100 units around a point 500 ahead of the cab, sections of
+  15 course points, the density level), `nlExecuteEvent` (every traffic car,
+  train, cable car, signal and customer task is an event: pcarDrive, carSteering,
+  carResistance, carBalance, the course occupancy grid, kyakuTaskExec),
+  `ExecColliObj` (the collision boxes: the cab hits the traffic and the traffic
+  hits back), `initCamera` / `camUpdate` (the chase camera: the eye eased by
+  homing vectors to 60 behind and 15 above the cab plus a smoothed speed term,
   the target 17 ahead and 5 up, the eye pulled in front of walls by
-  `GetCollision`, the view matrix and the 60 degree perspective) and
-  `SetStartCamera` / `ExecStartCamera` (the countdown's swoop around the cab,
-  widening to 70 degrees) from `1ST_READ.BIN` run in a small SH-4 interpreter over the
-  disc's course points (`SPLDCn.BIN`) and collision (`COLDCn.BIN`) at their
-  Dreamcast addresses, with the drawing, sound, rumble and effects calls
-  stubbed. Every frame of a run - the 366 frame countdown with the start camera,
-  then driving: the cab, the camera and every traffic car - matches the decomp's
-  SH-4 simulator bit for bit (`tests/fixtures/car-trace-*.json`, recorded by
-  `tools/car_trace.py`; the simulator's 64-bit `fmov` pairs are corrected there:
-  the SH-4 keeps `FR[2k]` at the lower address, which is how `nlPushMatrix`'s two
-  load paths agree and how `MultiRot4Vec` builds a rotation). The file documents
-  the Car_Data fields the game uses (position +0x78, angles +0x84, speed +0x15C
-  in units per frame, gear +0x120, the four wheel records at +0x1A0 - all four
-  wheels steer, the collision object at +0x00 whose rotation `putPlayerCar`'s
-  `GetRotVec` stores), the traffic car record (+0x78 type, +0x7C colour, +0x84
-  flags, +0x8C position, +0xA4 angles, +0xC8 brake, +0xCC speed, +0xD4 course
-  point) and the pad mapping (TaxiSW: stick, triggers, B = Drive, A = Reverse).
+  `GetCollision`, the view matrix and the 60 degree perspective; the get-in and
+  get-out cuts, modes 9 and 10), `SetStartCamera` / `ExecStartCamera` (the
+  countdown's swoop around the cab, widening to 70 degrees), `init_GameSystem` /
+  `exec_GameSystem` (the 366 frame countdown that releases the cab when 60
+  remain, the 50 s clock from the settings' defaults, the customer's time, time
+  up), `init_KyakuMain` / `exec_KyakuMain` and the customer tasks (who waits
+  where, the stop beside them, GS_GuestIn's time and fare, Psg_Execute's
+  state machine: the get-in that holds the cab, the ride, the drop-off's rating
+  and time money, the get-out), `Act_Init` / `Act_Execute` (the driver) from
+  `1ST_READ.BIN` run in a small SH-4 interpreter over the disc's course points
+  (`SPLDCn.BIN`), collision (`COLDCn.BIN`), motions (`MOTDC.BIN`) and people
+  models (`POLDC0.BIN`) at their Dreamcast addresses, with the drawing, sound,
+  rumble, effects and HUD calls stubbed or captured. Every frame of a recorded
+  fare - the countdown, the cab moved beside a customer, the get-in, 60 frames of
+  driving, the drop-off at the stop: the cab, the camera, every traffic car,
+  GSystem, every customer task and every figure drawn - matches the decomp's
+  SH-4 simulator bit for bit in both cities (`tests/fixtures/car-trace-*.json`,
+  recorded by `tools/car_trace.py`; the simulator's 64-bit `fmov` pairs are
+  corrected there: the SH-4 keeps `FR[2k]` at the lower address, which is how
+  `nlPushMatrix`'s two load paths agree and how `MultiRot4Vec` builds a
+  rotation). The file documents the Car_Data fields the game uses (position
+  +0x78, angles +0x84, speed +0x15C in units per frame, gear +0x120, control
+  +0x54, the four wheel records at +0x1A0 - all four wheels steer, the collision
+  object at +0x00 whose rotation `putPlayerCar`'s `GetRotVec` stores), GSystem
+  (0x0C1EC4A8: time, cash, fare, the customer's time and limits), a customer task
+  (the record, the passenger struct, the phase, the destination's stop entry),
+  the traffic car record (+0x78 type, +0x7C colour, +0x84 flags, +0x8C position,
+  +0xA4 angles, +0xC8 brake, +0xCC speed, +0xD4 course point) and the pad mapping
+  (TaxiSW: stick, triggers, B = Drive, A = Reverse). The HUD's fare roll, which
+  pays the cash in the game, does not run: the cash is paid the frame the
+  customer is delivered.
 * `src/traffic-view.js` - the traffic drawn as `putCarModel` draws it: the
   extracted vehicle models (`local-assets/vehicles/traffic`, near/far detail by
   the game's 400 unit rule, the camera's clipping cone and 1800 unit draw
   distance applied by `entryCarPut` itself from the game's own view matrix), the body
   tinted with the car's colour (KHR_materials_variants paints), lifted and tilted
   by its suspension, wheels spun by 0.2 x the speed, brake lamps.
-* `src/game.js` - the run's numbers, ported from the USA executable's GSystem
-  code: 50 s start (option table 0x0C0896C0), a customer's time
-  `int(route x 0.11 + 240 + option) x minuteScale + levelExtra`, the fare
-  `route x 2.5` cents, ratings (SPEEDY from 1500 frames left: +5 s and the
-  time money = frames left x 10 cents; FAST over 300: +2 s), the level that
-  rises every 1200 trip-meter units, "pick someone up" nags, time up.
-* `src/customers.js` - who stands where (`local-assets/customers`): a customer
-  appears within 1100 units (Original 700) when at most 7 course-0 points behind
-  the cab, with destination `(frame / 600) % 3` of their three; picked up when
-  the cab stops within `130 - 60k` of the spot (`k` = route length 2000..19000
-  mapped to 0..1, also the circle's size 100 - 60k); delivered inside the stop's
-  radius, stopped, not turning; ejected when their time runs out.
-* `src/customer-view.js` - the extracted characters on the street (idle poses
-  and "hey taxi" waves from `motions.glb`, facing the cab) with the coloured
-  pick-up circle.
+* `src/people.js` - the people drawn as the game draws them: the interpreter
+  captures `humanDraw` / `VSklIpPlay` (the V motions of the customers at the
+  kerb, played from `motions.glb` at the game's frame) and `FcvPlayBuffer` (the
+  key-curve poses of the driver, the get-in and get-out and the passenger in
+  the cab, rebuilt from the game's 17-vector pose buffer with the same root,
+  torso, head and two-bone solver math as `tools/extract_fcv_motions.py`) with
+  each figure's world matrix, and poses the extracted characters
+  (`local-assets/characters/char_NN.glb`) from them; the pick-up circle
+  (100 - 60k) and the destination's drop circle.
 * `src/hud.js` - clock, cash, customer time bar (green/yellow/red at the rating
   limits), destination picture + name (`local-assets/landmarks`), arrow, fare card,
-  countdown and TIME UP.
+  countdown and TIME UP, all read from the game's GSystem and customer tasks.
 * `src/main.js`, `src/scene.js` - the city (`BINCn.glb`), its set objects
   (`OBJDCn.glb`) and `cab_0.glb` drawn unlit (texture x vertex colour, as the
   Dreamcast does) through the game's camera: its view matrix on the three.js
-  camera, its horizontal field of view across a 4:3 picture letterboxed in the
-  window (near 3, far 15000, the decomp's reading of the projection).
+  camera, its horizontal field of view across a 4:3 picture whose vertical view
+  is kept while the width fills the window (near 3, far 15000, the decomp's
+  reading of the projection); the game's own culling of the traffic and the
+  people (`SetNewClippingAngle`) is widened with the window, so nothing pops in
+  at the sides; the HUD scales with the height and sits in the corners.
+* `src/audio.js` - the sound, from what the game's code asks its sound driver
+  for (the interpreter hooks the calls), over the WAVs `tools/extract_audio.py`
+  wrote (`local-assets/audio`) with Web Audio: the effects (`Sound_Request`'s
+  words name the DTPK requests of the loaded packs - horns, bells, the skids,
+  the fare's jingles; note-on velocity, playback rate, looping samples held until
+  their note-off), the cab's engine and tyres (`init_CarSound` / `exec_CarSound`
+  run and drive `nlsndIcsControl`: the engine program of `SNDDC3.BIN` keyed from
+  the rpm, its splits looped at the pitch curve's rate, the tyre programs of
+  `SNDDC1.BIN`), the voices (`Voice_Request` queues a script, `Voice_Execute`
+  streams its clips of `VOICE01.AFS` on four channels through the ADX stream
+  calls) and the music (`gdc_PlayStreamSongDisk` at the countdown's 60, the
+  jukebox of four songs of `SONG01.AFS`, `gdc_ExecStreamSongDisk`'s fade over
+  the last 120 frames, `ADXT_SetOutVol`'s decibels). Browsers start audio on the
+  first key or click; a song cued before that starts where it would be.
 * `tools/browser-check.mjs` - headless Chrome smoke run (drives, then runs one
-  fare by teleporting to a customer and their stop; screenshots).
+  fare by moving the cab beside a customer and on to their stop; screenshots).
 
-Not yet: pedestrians, the passenger in the cab and the get-in/get-out camera
-cuts (camera modes 10/11), the trick bonuses' display (Crazy Through etc. are counted:
-`car.tricks`), traffic horns and turn signals, HUD sprites, sound, Crazy Box.
+Not yet: the sound's finer points (velocity and key volume curves, pans, the
+AICA envelopes), pedestrians, the trick
+bonuses' display (Crazy Through etc. are counted: `car.tricks`), turn signals,
+HUD sprites, Crazy Box.
 
 Asset extraction is documented in [docs/asset-extraction.md](docs/asset-extraction.md).
