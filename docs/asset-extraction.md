@@ -302,7 +302,8 @@ Limits:
 * Tick length (tempo) isn't traced, so request delays are in ticks. The
   sequence header bits other than bit 7 (the driver reads them at `0x6BD4`-`0x6DE0`
   when it picks or clears a sequence slot; not traced), the `0xA0` control commands,
-  and which game code sends each request id are not decoded.
+  are not decoded. Which game code sends each request is listed by
+  `tools/extract_sound_uses.py` (see Sound request uses).
 * Split curve groups 0-3 (read by the driver, not traced), the split bytes `+1`
   and `+6..+0xB`, the program header's bytes 1-7, the chunks at header words
   `+0x20`-`+0x28` and `+0x38` (SNDDC0 only), envelopes and filters aren't
@@ -1259,6 +1260,71 @@ Assumptions and limits:
   Original rows repeat Arcade positions) are not exported row by row; only the
   rows a cut uses are.
 * Nothing was checked in the running game.
+## Sound request uses (JSON)
+```sh
+python3 tools/extract_sound_uses.py local-assets/disc --output local-assets/sound_uses --audio local-assets/audio
+```
+Runs in under a second. Writes `manifest.json` and an `index.html` with one row per
+sound request. `--audio` (the audio tool's output) is optional; it links each
+request's samples to their WAV files.
+
+How the game asks for a sound (USA addresses):
+* `Sound_Request(word, channel)` (`0x0C071338`; decomp `src/sound.c`) queues the
+  word for one of three channels when `MainMode` (`0x0C1EBF54`) is 1.
+* `Sound_Execute` (`0x0C0713E8`) hands each queued word to `0x0C07EA8C`, which
+  refuses words whose low byte lacks bit 7 and otherwise writes the word unchanged
+  into the driver's command ring (`0xA0800400`-`0xA0800500`).
+* The driver (`AICADRV.BIN` `0x734`-`0x754`) copies the four bytes in reverse
+  before decoding them. So `Sound_Request(0x000505A9, 0)` is driver request
+  `0xA9050500`: id `0xA905`, sequence 5, as decoded by the audio tool.
+
+The tool refuses to run unless 10 SH-4 instructions, 4 pool words and 9 driver
+instructions along this path match (plus the audio tool's request check). It then
+finds every `jsr` or tail `jmp` whose target register holds `0x0C071338`, and
+walks the code backwards along every path to that call to find `r4` (word) and
+`r5` (channel). It follows constants (`mov #imm`, `mov.w`/`mov.l @(disp,PC)`) and
+copies (`mov Rm,Rn`); registers r0-r7 are lost across other calls. A word read
+with `mov.l @(R0,Rm),Rn` from a constant address is a table: if the index comes
+from an and-mask on the same straight path, the entries are exactly the masked
+indices (all must be requests); otherwise the tool lists the run of consecutive
+words that are requests. Literal pool words are found from the loads that read
+them, repeated until stable, because pool words can themselves look like loads.
+Every constant word must be a request some pack holds.
+
+Each request also lists the decomp functions that pass its word as a constant
+(`DECOMP_CALLERS`, taken from the decomp's `src/*.c`, EU build). The words don't
+change between builds, so names are matched by value, not by address.
+
+Results on the USA disc (verified October 23, 2026):
+* 92 call sites: 84 `jsr` and 8 tail `jmp`. 82 pass constants (7 of them pass
+  different words on different paths), 8 read tables and 2 are unresolved.
+* The 8 tables: `0x0C0EC89C` and `0x0C0EC8BC` (index `& 7`, 8 entries each),
+  `0x0C0A25C8` and `0x0C0A2608` (4 masked entries each), and runs at `0x0C0A2478`
+  and `0x0C0A25E8` (7), `0x0C12EC84` (16) and `0x0C13DA58` (5).
+* 84 of the 102 requests are reached (53 by a constant). The 18 others: the
+  control-only `0xA8000000`, `0xA9000B00`-`0xA9000D00`, seven of id `0xA904`,
+  `0xA9050300`, `0xA9080000`, `0xA9080200` and `0xA90B0100`-`0xA90B0400`.
+* Channels: 0 on 77 calls, 1 on 17, 2 on 6, one unknown (`0x0C060F40`, after a
+  call).
+* All 45 constant words in the decomp's C are found in the USA code. Eight USA
+  words are not constants in the decomp's C (`0x00CA9`, `0x00FA9`, `0x011A9`,
+  `0x111A9`, `0x30FA9`, `0x310A9`, `0x401A9`, `0x410A9`); there the decomp computes
+  the word or the USA code differs.
+* What the decomp names suggest: `0xA900` (SNDDC0) results-screen titles; `0xA904`
+  HUD drums, time and ranking; `0xA905` (SNDDC1) timer, fare, arrow and results
+  digits; `0xA90A` (SNDDC7) the train; `0xA90B` the gear box; `0xA90C` (SNDDC1)
+  effects; `0xA90F` (SNDDC5) Crazy Box games; `0xA911` (SNDDC6) course objects and
+  the helicopter; `0xA909`/`0xA903` passengers (channel 2). These are function
+  names, not verified sound names.
+* Two runs give identical manifests apart from the WAV link paths.
+
+Limits:
+* The 2 unresolved sites read the word from an object (`0x0C036F1C`) or from a
+  table chosen at run time (`0x0C04500A`); run tables may list entries the index
+  never reaches.
+* Function names are only attached through the decomp's constants; USA call sites
+  are listed by address, not by routine.
+* Nothing was checked in the running game.
 ## Tests and web build
 
 ```sh
@@ -1266,7 +1332,7 @@ PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -v
 npm run build
 ```
 
-The 175 synthetic tests include 11 disc-extractor tests for nested directories,
+The 182 synthetic tests include 11 disc-extractor tests for nested directories,
 sector padding, partial final sectors, empty files, manifest hashes, no overwrite,
 invalid descriptors, endian disagreement, out-of-track extents, cycles, unsafe
 names, duplicates, multi-extent rejection, malformed records, truncated tracks,
@@ -1337,5 +1403,9 @@ line-index check and no overwrite.
 The 10 replay-cut tests cover the pool, instruction and debug-string checks, the
 reseed-frame match, row order and the end row, empty and non-car snapshots, stop
 and point ranges, the customer-stop cross-check and a deterministic full extraction.
+The 7 sound-use tests cover the byte reversal, written registers, call sites with
+constants, per-path words, words lost across a call, masked and run tables,
+unresolved and tail-jump sites, non-request table words, pool words that look
+like loads, the code checks and a full extraction with decomp callers and WAV links.
 No disc image is required.
 The Python tests are invoked separately; `npm test` does not run them.
