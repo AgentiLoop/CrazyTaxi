@@ -99,6 +99,7 @@ const POL0_BASE = 0x0C390000;
 const COL_BASE = 0x0CB40000;
 const CAR = 0x0C176E4C;
 export const CASH_CAP = 9999999;
+export const CRAZY_BOX = 2;           // Game_No / CourseMode of the Crazy Box
 
 const G = {
   courseMode: 0x0C1EBF2C, gameNo: 0x0C1EBF30, miniGameNo: 0x0C1EBF34,
@@ -148,6 +149,9 @@ const FN = {
   initKyakuStopArea: 0x0C034B40, initKyakuMain: 0x0C025FD4, execKyakuMain: 0x0C026076, execKyakuArea: 0x0C034A88,
   kyakuTaskExec: 0x0C0248AC,
   actInit: 0x0C05FDD8, actExecute: 0x0C05FF20,
+  // The Crazy Box: Init_DCmini (gameState0, after init_CarMain), execDCmini (gameStateDrive,
+  // after trafficControl): the game by MiniGame_No, its rules and its 2D overlay.
+  initDCmini: 0x0C05A4CC, execDCmini: 0x0C05A9D8,
   entryCarPut: 0x0C043BA2, trafficControl: 0x0C041ACC, executeEvent: 0x0C0296B6, execColliObj: 0x0C031EE4,
   putCarModel: 0x0C0434D0, putTrainModel: 0x0C0437FE,
   putPlayerCar: 0x0C0203E8, putPlayerCarByView: 0x0C0200E4,
@@ -315,13 +319,18 @@ export class DreamcastCar {
     this.aspect = DC_ASPECT;              // the picture's width / height the culling is for (main.js: the window's)
     this.city = opts.city || 0;
     this.cab = opts.cab || 0;
-    cpu.w32(G.courseMode, this.city);
+    // The Crazy Box (city 2): MiniGame_No is the game (0-15; menuSetMode: the box's item - 2).
+    this.miniGame = this.city === CRAZY_BOX ? opts.miniGame || 0 : 0;
+    // CourseMode, the city whose data is loaded: the Crazy Box's own, but game 15 drives
+    // the Arcade city (menuSetMode); Game_No stays 2 (Init_DCmini, execDCmini).
+    this.courseMode = courseModeOf(this.city, this.miniGame);
+    cpu.w32(G.courseMode, this.courseMode);
     cpu.w32(G.gameNo, this.city);
-    cpu.w32(G.miniGameNo, 0);
+    cpu.w32(G.miniGameNo, this.miniGame);
     cpu.w32(G.cabType, this.cab);
     cpu.w32(G.reverseMode, opts.reverse ? 1 : 0);
     cpu.w32(G.menu + 4, this.city);
-    cpu.w32(G.menu + 8, opts.rules || 0);
+    cpu.w32(G.menu + 8, this.city === CRAZY_BOX ? this.miniGame + 2 : opts.rules || 0);
     cpu.w8(G.startMode, 1);
     cpu.w32(G.mainMode, 1);
     cpu.w32(G.goiToolFlags, 2);
@@ -331,9 +340,9 @@ export class DreamcastCar {
     // byte 1 the start time (4: 50 s), byte 2 the customer time offset (3: none).
     for (let i = 0; i < 16; i++) cpu.w8(G.options + i, cpu.r8(G.optionDefaults + i));
     // CourseTableSet(city) and init_GameSystem's course line.
-    const table = cpu.r32(G.courseDirectory + this.city * 8), count = cpu.r32(G.courseDirectory + this.city * 8 + 4);
+    const table = cpu.r32(G.courseDirectory + this.courseMode * 8), count = cpu.r32(G.courseDirectory + this.courseMode * 8 + 4);
     cpu.w32(G.courseTable, table); cpu.w32(G.courseCount, count);
-    const rec = table + cpu.r16(G.courseLineTbl + this.city * 2) * 12;
+    const rec = table + cpu.r32(G.courseLineTbl + (this.city + this.miniGame) * 4) * 12;
     cpu.w32(G.lineTable, cpu.r32(rec)); cpu.w32(G.lineCount, cpu.r32(cpu.r32(rec + 4)));
 
     this.pos = { x: 0, y: 0, z: 0 };
@@ -385,12 +394,14 @@ export class DreamcastCar {
     this.call(FN.initGameSystem);
     this.call(FN.initColliObj, { r4: this.cab });
     this.call(FN.initCollision);
-    this.call(FN.initColliWall);
+    // InitCollision runs InitColliWall itself (for the Crazy Box with MiniGame_No's walls).
+    if (this.courseMode !== CRAZY_BOX) this.call(FN.initColliWall);
     this.call(FN.initCarMain);
+    if (this.city === CRAZY_BOX) this.call(FN.initDCmini);
     this.call(FN.initCamera, { r4: 0 });
-    this.call(FN.setStartCamera);
+    if (this.city !== CRAZY_BOX) this.call(FN.setStartCamera);
     this.call(FN.initKyakuStopArea);
-    this.call(FN.initKyakuMain);
+    if (this.kyaku) this.call(FN.initKyakuMain);
     this.call(FN.actInit);
     this.call(FN.entryCarPut, { r4: 0 });
     this.call(FN.trafficControl, { r4: 0 });
@@ -543,11 +554,12 @@ export class DreamcastCar {
     this.cars = [];
     this.tricks = [];
     this.people = [];
-    this.call(FN.execKyakuMain);
-    this.call(FN.execKyakuArea);
+    if (this.kyaku) this.call(FN.execKyakuMain);
+    if (this.courseMode !== CRAZY_BOX || this.miniGame !== 0) this.call(FN.execKyakuArea);
     this.call(FN.actExecute);
     this.call(FN.entryCarPut, { r4: 1 });
     this.call(FN.trafficControl, { r4: 1 });
+    if (this.city === CRAZY_BOX) this.call(FN.execDCmini);
     this.call(FN.executeEvent);
     this.call(FN.execColliObj);
     this.call(FN.voiceExecute);   // the system tick after the game's frame: the voice channels' scripts
@@ -573,6 +585,20 @@ export class DreamcastCar {
       }
     }
     if (cpu.r32(G.gameState) === 2 && before.state !== 2) this.events.push({ type: 'timeUp' });
+  }
+
+  /** Whether the customers run: everywhere but the Crazy Box's games 0-3 (gameState0, gameStateDrive). */
+  get kyaku() { return this.courseMode !== CRAZY_BOX || this.miniGame > 3; }
+
+  /**
+   * The Crazy Box game's state (USA addresses of the decomp's 0x0C2A992C etc.): flags (0x20 Start_Fault,
+   * 0x10 Start_Excellent; game 0 starts with 4), the fault's reason and the game's score word.
+   * Exec_Fault ends the game 180 frames after a fault.
+   */
+  crazyBox() {
+    const cpu = this.cpu;
+    const flags = cpu.r16(0x0C2A6E24);
+    return { flags, fault: !!(flags & 0x20), excellent: !!(flags & 0x10), reason: cpu.r32(0x0C2A6E28), score: cpu.rs32(0x0C2A6DEC) };
   }
 
   /** How many traffic cars exist (CarEntryNum) and the density level (TrafficLevel). */
@@ -636,7 +662,12 @@ export class DreamcastCar {
   }
 }
 
-/** The disc files the game needs, by city (0 Arcade, 1 Original). */
+/** CourseMode (the city loaded) for Game_No city and MiniGame_No game: the Crazy Box's game 15 is in the Arcade city. */
+export function courseModeOf(city, game = 0) {
+  return city === CRAZY_BOX && game === 15 ? 0 : city;
+}
+
+/** The disc files the game needs, by CourseMode (0 Arcade, 1 Original, 2 the Crazy Box; see courseModeOf). */
 export function carFiles(city) {
   return {
     exe: 'disc/1ST_READ.BIN', courses: `disc/SPLDC${city + 1}.BIN`, collision: `disc/COLDC${city + 1}.BIN`,
