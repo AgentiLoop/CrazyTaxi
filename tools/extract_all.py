@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """Run every Crazy Taxi extractor in order into one new local folder (stdlib only).
 
-The input is the supplied `.7z` archive, its raw high-density `(Track 3).bin`, or an already
-extracted disc folder (extract_disc.py output). From the archive only the Track 3 `.bin` is
-unpacked (macOS `tar`, i.e. bsdtar, reads 7z); the `.chd` is not supported because CHD
-decompression is not implemented. Each converter writes its usual folder as a sibling inside the
-output (`textures/`, `models/`, ...), with the cross-links the single tools take (`--textures`,
-`--courses`, `--audio`, `--landmarks`, `--customers`). Everything is built in a hidden staging
+The input is the supplied `.7z` archive or `.chd` image, the raw high-density `(Track 3).bin`, or
+an already extracted disc folder (extract_disc.py output). From the archive only the Track 3 `.bin`
+is unpacked (macOS `tar`, i.e. bsdtar, reads 7z); from the `.chd` only track 3 is decompressed with
+extract_chd.py. Each converter writes its usual folder as a sibling inside the output (`textures/`,
+`models/`, ...), with the cross-links the single tools take (`--textures`, `--courses`, `--audio`,
+`--landmarks`, `--customers`). Everything is built in a hidden staging
 folder next to the output and renamed into place only when every step succeeded; on any error the
 staging folder is removed. The output gets `manifest.json` (steps, seconds, file counts and bytes)
 and `index.html` linking every step's own page.
@@ -23,13 +23,14 @@ import tempfile
 import time
 
 try:
-    from tools import (extract_audio, extract_characters, extract_collision, extract_courses, extract_customers,
-                       extract_disc, extract_fcv_motions, extract_landmarks, extract_models, extract_motion_uses,
-                       extract_props, extract_pvr, extract_replay_cuts, extract_replays, extract_sound_uses,
-                       extract_sprites, extract_textures, extract_vehicles)
+    from tools import (extract_audio, extract_characters, extract_chd, extract_collision, extract_courses,
+                       extract_customers, extract_disc, extract_fcv_motions, extract_landmarks, extract_models,
+                       extract_motion_uses, extract_props, extract_pvr, extract_replay_cuts, extract_replays,
+                       extract_sound_uses, extract_sprites, extract_textures, extract_vehicles)
 except ImportError:  # run as a script from tools/
     import extract_audio, extract_characters, extract_collision, extract_courses, extract_customers  # noqa: E401
-    import extract_disc, extract_fcv_motions, extract_landmarks, extract_models, extract_motion_uses  # noqa: E401
+    import extract_chd, extract_disc, extract_fcv_motions, extract_landmarks, extract_models  # noqa: E401
+    import extract_motion_uses  # noqa: E401
     import extract_props, extract_pvr, extract_replay_cuts, extract_replays, extract_sound_uses  # noqa: E401
     import extract_sprites, extract_textures, extract_vehicles  # noqa: E401
 
@@ -106,10 +107,9 @@ def extract(source, output, keep_track=False, step_list=None, log=print):
     if not source.exists():
         raise ValueError("source does not exist")
     kind = "disc" if source.is_dir() else source.suffix.lower()
-    if kind == ".chd":
-        raise ValueError("CHD is not supported; pass the .7z archive or its (Track 3).bin")
-    if kind not in ("disc", ".7z", ".bin"):
-        raise ValueError("source must be a .7z archive, a (Track 3).bin or an extracted disc folder")
+    if kind not in ("disc", ".7z", ".chd", ".bin"):
+        raise ValueError("source must be a .7z archive, a .chd image, a (Track 3).bin or an extracted disc "
+                         "folder")
     if kind == "disc" and not (source / "1ST_READ.BIN").is_file():
         raise ValueError("disc folder has no 1ST_READ.BIN")
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -125,9 +125,13 @@ def extract(source, output, keep_track=False, step_list=None, log=print):
             if kind == ".7z":
                 log("unpacking Track 3 from %s" % source.name)
                 track = unpack_track(source, staging / "tracks")
+            elif kind == ".chd":
+                log("decompressing track 3 from %s" % source.name)
+                extract_chd.extract(source, staging / "tracks", tracks=[3], log=log)
+                track = staging / "tracks" / extract_chd.track_name(source.stem, 3)
             log("extracting disc files")
             extract_disc.extract(track, staging / "disc")
-            if kind == ".7z" and not keep_track:
+            if kind in (".7z", ".chd") and not keep_track:
                 shutil.rmtree(staging / "tracks")
             disc, manifest["disc"] = staging / "disc", "disc"
             manifest["disc_seconds"] = round(time.monotonic() - started, 1)
@@ -149,7 +153,8 @@ def extract(source, output, keep_track=False, step_list=None, log=print):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("source", type=Path, help=".7z archive, raw (Track 3).bin or extracted disc folder")
+    parser.add_argument("source", type=Path,
+                        help=".7z archive, .chd image, raw (Track 3).bin or extracted disc folder")
     parser.add_argument("--output", type=Path, required=True, help="new local output folder")
     parser.add_argument("--keep-track", action="store_true", help="keep the unpacked Track 3 .bin under tracks/")
     args = parser.parse_args()
