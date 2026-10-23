@@ -38,35 +38,114 @@ export function loadGltf(url, onProgress) {
   return new Promise((resolve, reject) => loader.load(url, resolve, onProgress, reject));
 }
 
+// Draw order. The Dreamcast sorts its translucent polygons per pixel, and most of the
+// game's models (every traffic car, many set objects) sit in the translucent list, so
+// they show the right way round whatever order they are sent in. three.js draws a
+// glTF BLEND material without writing depth, sorted only per object: a far-side wheel
+// drawn after the body shows through it, a bush through a tree. Per-pixel sorting
+// gives the same picture as the depth buffer wherever a texel is solid (alpha 1) and
+// shows nothing where it is empty (alpha 0), so a BLEND material is drawn by what its
+// texels hold (tools/draw-order-check.mjs plays the game headlessly and finds the
+// pixels that still come out wrong):
+//   solid (the material, its texture and its vertex colours all alpha 1): opaque;
+//   mask (the texture's alpha only 0 or 1): opaque with alpha test 0.5;
+//   partial (real see-through texels): twice - its solid texels opaque (alpha test
+//     0.998, writing depth), then the whole material blended over the scene as before
+//     (a child mesh "<name>#blend"; its solid texels repeat the same colour).
+const ALPHA_SOLID = 0.998;
+const textureAlphas = new WeakMap();
+const blendOf = new WeakMap();      // unlit opaque-pass material -> its blended pass
+
+/** 'solid', 'mask' or 'partial': the alpha values a texture's image holds. */
+function textureAlpha(texture) {
+  const img = texture && texture.image;
+  if (!img) return 'solid';
+  let kind = textureAlphas.get(img);
+  if (kind) return kind;
+  kind = 'partial';     // unreadable: draw it both ways
+  const w = img.width, h = img.height;
+  const canvas = typeof OffscreenCanvas !== 'undefined' ? new OffscreenCanvas(w, h) : null;
+  const ctx = canvas && w && h ? canvas.getContext('2d', { willReadFrequently: true }) : null;
+  if (ctx) {
+    ctx.drawImage(img, 0, 0);
+    const d = ctx.getImageData(0, 0, w, h).data;
+    let zero = false, mid = false;
+    for (let i = 3; i < d.length; i += 4) {
+      if (d[i] === 0) zero = true;
+      else if (d[i] !== 255) { mid = true; break; }
+    }
+    kind = mid ? 'partial' : zero ? 'mask' : 'solid';
+  }
+  textureAlphas.set(img, kind);
+  return kind;
+}
+
+/** True when a geometry's vertex colours carry alpha below 1. */
+function vertexAlpha(geometry) {
+  const c = geometry.attributes.color;
+  if (!c || c.itemSize < 4) return false;
+  for (let i = 0; i < c.count; i++) if (c.getW(i) < ALPHA_SOLID) return true;
+  return false;
+}
+
+/** How a material's texels are drawn (see the header of this section). */
+function alphaKind(m, vertexAlphaBelowOne) {
+  if (!m.transparent) return 'opaque';
+  if (m.opacity < 1 || vertexAlphaBelowOne) return 'partial';
+  return textureAlpha(m.map);
+}
+
 /** An unlit copy of a glTF material (the game has no real-time lighting on the city). */
-export function toUnlit(m, vertexColors, cache) {
-  let u = cache && cache.get(m);
+export function toUnlit(m, vertexColors, cache, vertexAlphaBelowOne = false) {
+  const key = `${vertexColors}:${vertexAlphaBelowOne}`;
+  let byKey = cache && cache.get(m);
+  let u = byKey && byKey[key];
   if (!u) {
-    u = new THREE.MeshBasicMaterial({
-      map: m.map || null,
-      color: m.color,
-      vertexColors,
-      transparent: m.transparent,
-      alphaTest: m.alphaTest,
-      opacity: m.opacity,
-      side: m.side,
-      depthWrite: m.depthWrite,
-    });
-    u.name = m.name;
-    if (cache) cache.set(m, u);
+    const kind = alphaKind(m, vertexAlphaBelowOne);
+    const make = (blended) => {
+      const x = new THREE.MeshBasicMaterial({
+        map: m.map || null,
+        color: m.color,
+        vertexColors,
+        transparent: blended,
+        alphaTest: blended ? m.alphaTest : kind === 'mask' ? 0.5 : kind === 'partial' ? ALPHA_SOLID : m.alphaTest,
+        opacity: m.opacity,
+        side: m.side,
+        depthWrite: blended || kind === 'opaque' ? m.depthWrite : true,
+      });
+      x.name = m.name;
+      return x;
+    };
+    u = make(false);
+    if (kind === 'partial') blendOf.set(u, make(true));
+    if (cache) { if (!byKey) cache.set(m, byKey = {}); byKey[key] = u; }
   }
   return u;
 }
 
-/** Replace the PBR materials with unlit ones. */
+/** The blended pass of an unlit material drawn twice (kind 'partial'), else null. */
+export function blendPass(u) {
+  return blendOf.get(u) || null;
+}
+
+/** Replace the PBR materials with unlit ones (and add the blended passes: see above). */
 export function makeUnlit(root, cache = new Map()) {
-  root.traverse((o) => {
-    if (!o.isMesh) return;
+  const meshes = [];
+  root.traverse((o) => { if (o.isMesh) meshes.push(o); });
+  for (const o of meshes) {
     const vc = !!o.geometry.attributes.color;
+    const va = vc && vertexAlpha(o.geometry);
     const mats = Array.isArray(o.material) ? o.material : [o.material];
-    const out = mats.map((m) => toUnlit(m, vc, cache));
+    const out = mats.map((m) => toUnlit(m, vc, cache, va));
     o.material = Array.isArray(o.material) ? out : out[0];
-  });
+    const blends = out.map(blendPass);
+    if (blends.some(Boolean)) {
+      const b = new THREE.Mesh(o.geometry, Array.isArray(o.material) ? blends.map((x, i) => x || out[i]) : blends[0]);
+      b.name = `${o.name}#blend`;
+      b.renderOrder = o.renderOrder;
+      o.add(b);
+    }
+  }
   return root;
 }
 

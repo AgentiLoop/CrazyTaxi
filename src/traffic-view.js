@@ -14,7 +14,7 @@
 // the pixels left non-zero are darkened (and the stencil cleared). Needs a
 // renderer with stencil: true (src/main.js). The darkness is a guess (50%).
 import * as THREE from 'three';
-import { loadGltf, makeUnlit, toUnlit } from './scene.js';
+import { loadGltf, makeUnlit, toUnlit, blendPass } from './scene.js';
 
 const LAMP = /^lamp_([ab])_(near|far)_(\d)_/;
 
@@ -177,7 +177,13 @@ export class TrafficView {
       for (const mesh of inst.painted) {
         const v = inst.model.variants.get(mesh.name);
         const mat = c.colour >= 0 && v.get(name);
-        if (mat) mesh.material = mat;
+        if (!mat) continue;
+        mesh.material = mat;
+        // A paint with see-through texels draws twice (src/scene.js makeUnlit).
+        const pass = blendPass(mat);
+        let b = mesh.children.find((o) => o.name === `${mesh.name}#blend`);
+        if (pass && !b) { b = new THREE.Mesh(mesh.geometry, pass); b.name = `${mesh.name}#blend`; mesh.add(b); }
+        if (b) { b.visible = !!pass; if (pass) b.material = pass; }
       }
     }
   }
