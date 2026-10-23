@@ -88,7 +88,7 @@ class ExtractAllTests(unittest.TestCase):
         (self.root / "exists").mkdir()
         cases = [(self.disc, self.root / "exists", "already exists"),
                  (self.root / "missing.7z", self.root / "o", "does not exist"),
-                 (self.root / "x.chd", self.root / "o", "CHD"),
+                 (self.root / "x.chd", self.root / "o", "not a CHD"),
                  (self.root / "x.iso", self.root / "o", "must be"),
                  (self.root / "exists", self.root / "o", "1ST_READ")]
         (self.root / "x.chd").write_bytes(b"")
@@ -114,6 +114,23 @@ class ExtractAllTests(unittest.TestCase):
         self.assertEqual(manifest["disc"], "disc")
         self.assertTrue((self.root / "all" / "disc" / "manifest.json").is_file())
 
+    def test_chd_source_decompresses_track_3_only(self):
+        image = self.root / "Game.chd"
+        image.write_bytes(b"")
+        seen = []
+        def fake_chd(source, output, tracks=None, log=None):
+            seen.append((Path(source), tracks))
+            output.mkdir()
+            (output / "Game (Track 3).bin").write_bytes(b"")
+        def fake_disc(track_path, output):
+            seen.append(Path(track_path).name)
+            output.mkdir()
+        with mock.patch.object(extract_all.extract_chd, "extract", side_effect=fake_chd), \
+                mock.patch.object(extract_all.extract_disc, "extract", side_effect=fake_disc):
+            manifest = extract_all.extract(image, self.root / "all", step_list=[], log=lambda _: None)
+        self.assertEqual(seen, [(image.absolute(), [3]), "Game (Track 3).bin"])
+        self.assertEqual(manifest["source"]["kind"], ".chd")
+        self.assertFalse((self.root / "all" / "tracks").exists())
     @unittest.skipUnless(shutil.which("tar"), "needs tar")
     def test_unpack_track_picks_track_3(self):
         src = self.root / "src"
