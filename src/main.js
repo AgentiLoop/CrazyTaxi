@@ -26,7 +26,7 @@ const hudRoot = document.getElementById('hud');
 const say = (t) => { status.textContent = t; };
 
 const canvas = document.getElementById('view');
-const renderer = new THREE.WebGLRenderer({ antialias: true, canvas });
+const renderer = new THREE.WebGLRenderer({ antialias: true, canvas, stencil: true });   // stencil: the traffic's shadow volumes
 renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
 
 const scene = new THREE.Scene();

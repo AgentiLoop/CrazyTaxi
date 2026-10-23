@@ -8,10 +8,40 @@
 // 0.2 x the speed per frame, the brake lamps (lamp set index 2) on while the
 // car brakes. The game's turn signals (night only) and the ground-fitted shadow
 // transform are not reproduced: the shadow sits under the body.
+// The shadow model is a modifier volume (PutMVObj: an open-bottomed box whose
+// face colour is meaningless), so it is drawn as one: its front faces in front
+// of the scene add 1 to the stencil, its back faces in front subtract 1, then
+// the pixels left non-zero are darkened (and the stencil cleared). Needs a
+// renderer with stencil: true (src/main.js). The darkness is a guess (50%).
 import * as THREE from 'three';
 import { loadGltf, makeUnlit, toUnlit } from './scene.js';
 
 const LAMP = /^lamp_([ab])_(near|far)_(\d)_/;
+
+const volume = (side, zPass) => new THREE.MeshBasicMaterial({
+  side, colorWrite: false, depthWrite: false, transparent: true, fog: false,
+  stencilWrite: true, stencilFunc: THREE.AlwaysStencilFunc, stencilZPass: zPass,
+});
+const SHADOW_PASSES = [
+  [volume(THREE.FrontSide, THREE.IncrementWrapStencilOp), 10],
+  [volume(THREE.BackSide, THREE.DecrementWrapStencilOp), 10],
+  [new THREE.MeshBasicMaterial({
+    color: 0x000000, opacity: 0.5, transparent: true, depthWrite: false, depthTest: false, fog: false,
+    stencilWrite: true, stencilRef: 0, stencilFunc: THREE.NotEqualStencilFunc, stencilZPass: THREE.ZeroStencilOp,
+  }), 11],
+];
+
+/** Replace a shadow mesh's (opaque, garbage-coloured) material by the three volume passes. */
+function shadowVolume(mesh) {
+  const [first, ...rest] = SHADOW_PASSES;
+  mesh.material = first[0];
+  mesh.renderOrder = first[1];
+  for (const [material, order] of rest) {
+    const pass = new THREE.Mesh(mesh.geometry, material);
+    pass.renderOrder = order;
+    mesh.add(pass);
+  }
+}
 
 export class TrafficView {
   /**
@@ -72,6 +102,9 @@ export class TrafficView {
         else if (o.name.startsWith('shadow_')) {
           if (part === near) root.add(o);          // the shadow stays on the ground under the body
           else o.visible = false;
+          const meshes = [];
+          o.traverse((m) => { if (m.isMesh) meshes.push(m); });
+          meshes.forEach(shadowVolume);
         }
       }
     }
