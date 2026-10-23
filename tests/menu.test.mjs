@@ -79,3 +79,29 @@ test('every sprite the menu draws has a texture in the sprite manifest; glyphs a
   }
   assert.ok(sprites > 1000 && glyphs > 200, `${sprites} sprites, ${glyphs} glyphs`);
 });
+
+test('the title: the logo slides in, PRESS START BUTTON blinks, it waits for START, then the top menu; EXIT comes back', { skip: !have }, () => {
+  const menu = new DreamcastMenu(new Uint8Array(readFileSync(EXE)), { title: true });
+  assert.equal(menu.screen, 'title');
+  menu.update(0);
+  const logo = menu.draws.filter((d) => d.kind === 'sprite').map((d) => d.texture);
+  for (let n = 100; n <= 112; n++) assert.ok(logo.includes(n), `logo piece ${n} in ${logo}`);
+  const x0 = menu.draws.find((d) => d.texture === 100).x;
+  for (let i = 0; i < 30; i++) menu.update(0);
+  assert.ok(menu.draws.find((d) => d.texture === 100).x < x0, 'the logo slides in from the right');
+  assert.ok(lines(menu).includes('PRESSSTARTBUTTON'), lines(menu).join('|'));
+  let blinked = false;
+  for (let i = 0; i < 1200; i++) {                 // the title restarts in place of the replays
+    assert.equal(menu.update(0), true);
+    if (!lines(menu).length) blinked = true;
+  }
+  assert.ok(blinked, 'PRESS START BUTTON blinks');
+  assert.equal(menu.screen, 'title');
+  press(menu, PAD.START, 90);
+  assert.equal(menu.screen, 'menu');
+  assert.ok(lines(menu).includes('ARCADE'), lines(menu).join('|'));
+  press(menu, PAD.UP);                             // EXIT
+  press(menu, PAD.A, 120);
+  assert.equal(menu.screen, 'title');
+  assert.equal(menu.result, null);
+});

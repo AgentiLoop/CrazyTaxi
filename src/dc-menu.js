@@ -1,10 +1,10 @@
-// The game's own menus (MainMode 3: InitMenu, then Menu every frame) running in the
-// SH-4 interpreter (src/sh4.js) over 1ST_READ.BIN, USA addresses. Nothing about the
-// screens is written here: the top menu (ARCADE, ORIGINAL, CRAZY BOX, OPTIONS,
-// RECORDS, SAVE & LOAD, EXIT), the rules screen, the options, the slides and the
-// cursor all come from the game's code and tables. What the code would send to the
-// PowerVR is captured instead:
-//
+// The game's own title screen and menus running in the SH-4 interpreter (src/sh4.js)
+// over 1ST_READ.BIN, USA addresses. Nothing about the screens is written here: the
+// title (MainMode 0, the advertise handler's title states: the CRAZY TAXI logo
+// sliding in, PRESS START BUTTON blinking), the top menu (MainMode 3: InitMenu, then
+// Menu every frame: ARCADE, ORIGINAL, CRAZY BOX, OPTIONS, RECORDS, SAVE & LOAD, EXIT),
+// the rules screen, the options, the slides and the cursor all come from the game's
+// code and tables. What the code would send to the PowerVR is captured instead:
 // - nlSprPut(record) (0x0C07D018), every 2D sprite: the record holds the sprite
 //   number (= the texture number of local-assets/sprites/manifest.json), the
 //   position of its top-left corner on the 640 x 480 screen, 1/z, the scale, the UVs,
@@ -25,6 +25,12 @@
 // driver's busy wait and the memory card load at start (callLoadData). The menu's
 // choice ends the run: menuSetMode (0x0C03EB32) would set MainMode 1 and load the
 // city; here it is caught and reported as `result` instead.
+//
+// The attract sequence between the titles (the SEGA logo, a 3D model, and the
+// replays of recorded runs through the city) is not ported: whenever the advertise
+// handler moves on to it (sub modes 0-5), the title starts again (sub mode 6,
+// init_Title2). START on the title goes to the menu (GotoMenu, as the game does);
+// EXIT in the menu comes back to the title (callGoBackAdvertise: sub mode 8).
 import { SH4 } from './sh4.js';
 
 const EXE_BASE = 0x0C010000;
@@ -32,6 +38,7 @@ const EXE_BASE = 0x0C010000;
 const G = {
   mainMode: 0x0C1EBF54, subMode: 0x0C1EBF58,
   frameCounter: 0x0C1EC050,
+  startToPlay: 0x0C1EC058,            // InitSys sets 1: the title waits for START (0 = the arcade's credit screen, which leaves at once)
   taxiSW: 0x0C1EBF6C,                 // the pad: +0 held, +4 pressed, +8 released, +0xC last held, +0x10/+0x16 stick (0x8000 = centre)
   language: 0x0C29EEC8,               // 0 Japanese (sprMJAP), else English (sprMENG)
   menu: 0x0C29EEE0,                   // menu state: +0 depth, +4 + 4 * depth the item chosen at each depth (GetMenuMode(k) = +4 + 4k)
@@ -48,6 +55,7 @@ const G = {
 const FN = {
   initMatrixStack: 0x0C0765E0,
   pfInit: 0x0C03022C, initMenu: 0x0C040FF8, menu: 0x0C0410B0,
+  advertise: 0x0C02BB68,              // MainMode 0's handler (AdvExecState): the sub mode's state from the table at 0x0C08A4B4
   menuSetMode: 0x0C03EB32,
   sprPut: 0x0C07D018, putc: 0x0C03055E,
   fileLoad: 0x0C02D4E2,
@@ -106,20 +114,34 @@ export class DreamcastMenu {
     this.result = null;
     this.held = 0;
     this.frames = 0;
-    this.init();
+    if (opts.title) this.title();
+    else this.init();
+  }
+
+  /** InitSys's part: the language, the matrix stacks, the text printer. */
+  initSys() {
+    const cpu = this.cpu;
+    cpu.w32(G.language, this.english ? 1 : 0);
+    cpu.w32(G.startToPlay, 1);
+    this.call(FN.initMatrixStack, { r4: MATRIX_STACK, r5: MATRIX_STACK_SIZE });
+    this.call(FN.pfInit, { r4: 0 });     // the text printer (font 0, aspect 1, size 1)
+    this.result = null;
+    this.held = 0;
   }
 
   /** InitMenu, as MainMode 3 starts it. */
   init() {
-    const cpu = this.cpu;
-    cpu.w32(G.language, this.english ? 1 : 0);
-    this.call(FN.initMatrixStack, { r4: MATRIX_STACK, r5: MATRIX_STACK_SIZE });
-    cpu.w32(G.mainMode, 3);
-    cpu.w32(G.subMode, 0);
-    this.call(FN.pfInit, { r4: 0 });     // InitSys: the text printer (font 0, aspect 1, size 1)
+    this.initSys();
+    this.cpu.w32(G.mainMode, 3);
+    this.cpu.w32(G.subMode, 0);
     this.call(FN.initMenu);
-    this.result = null;
-    this.held = 0;
+  }
+
+  /** The title screen: MainMode 0 at sub mode 6 (init_Title2; the logo slides in, then PRESS START). */
+  title() {
+    this.initSys();
+    this.cpu.w32(G.mainMode, 0);
+    this.cpu.w32(G.subMode, 6);
   }
 
   call(fn, regs) {
@@ -150,11 +172,25 @@ export class DreamcastMenu {
     this.held = buttons;
     this.draws = [];
     this.sounds = [];
-    if (cpu.r32(G.mainMode) !== 3 || this.result) return false;
-    this.call(FN.menu);
+    if (this.result) return false;
+    const mode = cpu.r32(G.mainMode);
+    if (mode === 0) {
+      if (cpu.r32(G.subMode) < 6) cpu.w32(G.subMode, 6);   // the logo and the replays: not ported, the title again
+      this.call(FN.advertise);
+      if (cpu.r32(G.mainMode) === 3) this.call(FN.initMenu);   // START: GotoMenu
+    } else if (mode === 3) {
+      this.call(FN.menu);
+    } else {
+      return false;
+    }
     cpu.w32(G.frameCounter, cpu.r32(G.frameCounter) + 1);
     this.frames++;
-    return !this.result && cpu.r32(G.mainMode) === 3;
+    return !this.result && (cpu.r32(G.mainMode) === 0 || cpu.r32(G.mainMode) === 3);
+  }
+
+  /** 'title' (MainMode 0) or 'menu' (MainMode 3). */
+  get screen() {
+    return this.cpu.r32(G.mainMode) === 0 ? 'title' : 'menu';
   }
 
   /** The menu state: depth and the item chosen at each depth (GetMenuMode). */

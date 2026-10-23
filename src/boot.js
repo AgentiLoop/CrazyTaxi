@@ -1,9 +1,11 @@
-// Start-up: the game's menu (src/dc-menu.js, drawn by src/menu-view.js), then the
-// city the player chose (src/main.js reads ?city=). With ?city= in the address the
-// menu is skipped (the browser checks start a city directly).
+// Start-up: the game's title screen and menu (src/dc-menu.js, drawn by
+// src/menu-view.js), then the city the player chose (src/main.js reads ?city=). With
+// ?city= in the address the title and the menu are skipped (the browser checks start
+// a city directly).
 //
 // Keys in the menu, as the Dreamcast pad: arrows / WASD = d-pad, Z / Enter / Space =
-// A (choose), X / Escape / Backspace = B (back), Q = Start.
+// A (choose), X / Escape / Backspace = B (back), Q = Start. On the title, which only
+// takes START on the Dreamcast, the A keys press START too.
 import { DreamcastMenu, PAD, MODES } from './dc-menu.js';
 import { MenuView } from './menu-view.js';
 import { letterbox } from './scene.js';
@@ -34,7 +36,7 @@ async function runMenu() {
     fetchOk('disc/1ST_READ.BIN').then((r) => r.arrayBuffer()).then((b) => new Uint8Array(b)),
     fetchOk('sprites/manifest.json').then((r) => r.json()),
   ]);
-  const menu = new DreamcastMenu(exe);
+  const menu = new DreamcastMenu(exe, { title: true });
   const canvas = document.createElement('canvas');
   canvas.id = 'menu';
   canvas.style.position = 'fixed';
@@ -65,7 +67,7 @@ async function runMenu() {
       last = now;
       while (acc >= STEP) {
         acc -= STEP;
-        if (menu.update(held)) continue;
+        if (menu.update(menu.screen === 'title' && held & PAD.A ? held | PAD.START : held)) continue;
         const city = menu.result && CITIES[menu.result.mode];
         if (city) {
           removeEventListener('resize', resize);
@@ -75,8 +77,8 @@ async function runMenu() {
           resolve({ city, ...menu.result });
           return;
         }
-        // EXIT (back to the title, not ported yet) or the Crazy Box (not playable yet):
-        // the menu starts over.
+        // The Crazy Box (not playable yet): the menu starts over (EXIT goes back to
+        // the title inside the game's code).
         if (menu.result) console.warn(`menu: ${MODES[menu.result.mode]} is not playable yet`);
         menu.init();
       }
