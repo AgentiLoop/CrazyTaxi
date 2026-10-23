@@ -31,4 +31,6 @@ export const START = {
 export const CITIES = {
   arcade: { models: 'models/BINC1.glb', props: 'props/OBJDC1.glb', collision: 'collision/arcade.json', start: START.arcade },
   original: { models: 'models/BINC2.glb', props: 'props/OBJDC2.glb', collision: 'collision/original.json', start: START.original },
+  // The Crazy Box's course (its games' start spots come from init_CarMain / Init_DCmini).
+  crazybox: { models: 'models/BINC3.glb', props: 'props/OBJDC3.glb' },
 };

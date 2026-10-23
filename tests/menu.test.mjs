@@ -151,3 +151,15 @@ test('the chosen driver drives: DreamcastCar({cab}) puts that driver (character 
     assert.ok(car.people.some((p) => p.chara === cab + 1), `cab ${cab}: ${car.people.map((p) => p.chara)}`);
   }
 });
+
+test('CRAZY BOX: the boxes 1-1 to 1-3 are open, CABBIE picks the driver, a box reports mode 2 with its game (item - 2)', { skip: !have }, () => {
+  const menu = start();
+  press(menu, PAD.DOWN); press(menu, PAD.DOWN);
+  press(menu, PAD.A, 100);
+  assert.ok(lines(menu).join(' ').includes('1-1'), lines(menu).join(' '));
+  press(menu, PAD.DOWN);                   // YOUR NAME -> CABBIE
+  press(menu, PAD.RIGHT); press(menu, PAD.RIGHT);
+  press(menu, PAD.DOWN); press(menu, PAD.DOWN); press(menu, PAD.DOWN);   // 1-1, 1-2, 1-3
+  press(menu, PAD.A, 200);
+  assert.deepEqual(menu.result, { mode: 2, item: 4, game: 2, cab: 2 });
+});

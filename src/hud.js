@@ -71,7 +71,8 @@ export class Hud {
 
     for (const ev of events) {
       if (ev.type === 'in' && ev.customer) {
-        const lm = stops[ev.customer.stop].landmark;
+        const lm = stops[ev.customer.stop] && stops[ev.customer.stop].landmark;
+        if (!lm) continue;   // the Crazy Box's stops have no landmark picture
         const png = LANDMARK_DIR[lm.file] + String(lm.entry).padStart(2, '0') + '.png';
         e.landmark.src = this.assets + png;
         e.landmark.classList.remove('pack');

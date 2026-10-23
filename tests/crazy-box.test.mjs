@@ -51,3 +51,19 @@ test('every game starts and runs its countdown', { skip: !have }, () => {
     assert.ok(Number.isFinite(car.pos.x) && Number.isFinite(car.pos.y), `game ${g} position`);
   }
 });
+
+test('the game ends: callTryAgain 180 frames after the fault sets over (once); init starts over', { skip: !have }, () => {
+  const car = make(0);
+  let n = 0, faultAt = -1;
+  while (!car.crazyBox().over && n < 1500) {
+    car.update(n > 190 ? { ...IDLE, accel: 1 } : IDLE);
+    if (faultAt < 0 && car.crazyBox().fault) faultAt = n;
+    n++;
+  }
+  assert.ok(car.crazyBox().over, 'over');
+  assert.ok(n - faultAt >= 170 && n - faultAt <= 190, `ended ${n - faultAt} frames after the fault`);
+  for (let i = 0; i < 30; i++) car.update(IDLE);
+  car.init();
+  assert.equal(car.crazyBox().over, false);
+  assert.equal(car.crazyBox().fault, false);
+});

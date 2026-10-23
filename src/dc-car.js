@@ -152,6 +152,10 @@ const FN = {
   // The Crazy Box: Init_DCmini (gameState0, after init_CarMain), execDCmini (gameStateDrive,
   // after trafficControl): the game by MiniGame_No, its rules and its 2D overlay.
   initDCmini: 0x0C05A4CC, execDCmini: 0x0C05A9D8,
+  // callTryAgain: the game is over (Exec_Fault 180 frames after a fault, or the clear) - the
+  // TRY AGAIN window (SetWindow(2)), voice 0x275, the songs stopped. The window's code does
+  // not run here, so the game calls it again every frame: only the first call runs.
+  callTryAgain: 0x0C03FC9A,
   entryCarPut: 0x0C043BA2, trafficControl: 0x0C041ACC, executeEvent: 0x0C0296B6, execColliObj: 0x0C031EE4,
   putCarModel: 0x0C0434D0, putTrainModel: 0x0C0437FE,
   putPlayerCar: 0x0C0203E8, putPlayerCarByView: 0x0C0200E4,
@@ -315,6 +319,11 @@ export class DreamcastCar {
     cpu.hooks.set(FN.songStreamRemain, () => (this.audio ? this.audio.songRemain() : 0x58764));
     cpu.hooks.set(FN.adxtSetOutVol, (c) => { if (this.audio) this.audio.songVolume(c.r[5] | 0); return 0; });
     cpu.hooks.set(FN.setLandmark, (c) => { this.landmark = c.r[4] | 0; return 0; });
+    cpu.hooks.set(FN.callTryAgain, () => {
+      if (this.tryAgain) return 0;
+      this.tryAgain = true;
+      return false;
+    });
     this.audio = opts.audio || null;
     this.aspect = DC_ASPECT;              // the picture's width / height the culling is for (main.js: the window's)
     this.city = opts.city || 0;
@@ -381,6 +390,7 @@ export class DreamcastCar {
   /** The game's set-up (gameState0): matrix stacks, heap, events, RNG, the game system, collision objects, init_CarMain, the camera, the customers, the driver, the traffic. */
   init() {
     const cpu = this.cpu;
+    this.tryAgain = false;
     this.call(FN.initMatrixStack, { r4: MATRIX_STACK, r5: MATRIX_STACK_SIZE });
     cpu.w32(G.heapPtr, HEAP);
     this.call(FN.initHeap, { r4: HEAP, r5: HEAP_SIZE });
@@ -593,12 +603,12 @@ export class DreamcastCar {
   /**
    * The Crazy Box game's state (USA addresses of the decomp's 0x0C2A992C etc.): flags (0x20 Start_Fault,
    * 0x10 Start_Excellent; game 0 starts with 4), the fault's reason and the game's score word.
-   * Exec_Fault ends the game 180 frames after a fault.
+   * Exec_Fault ends the game 180 frames after a fault; `over`: the game has ended (callTryAgain).
    */
   crazyBox() {
     const cpu = this.cpu;
     const flags = cpu.r16(0x0C2A6E24);
-    return { flags, fault: !!(flags & 0x20), excellent: !!(flags & 0x10), reason: cpu.r32(0x0C2A6E28), score: cpu.rs32(0x0C2A6DEC) };
+    return { flags, fault: !!(flags & 0x20), excellent: !!(flags & 0x10), reason: cpu.r32(0x0C2A6E28), score: cpu.rs32(0x0C2A6DEC), over: this.tryAgain };
   }
 
   /** How many traffic cars exist (CarEntryNum) and the density level (TrafficLevel). */

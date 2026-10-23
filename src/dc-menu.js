@@ -157,6 +157,7 @@ export class DreamcastMenu {
     cpu.hooks.set(FN.menuSetMode, () => {
       const choice = { mode: cpu.r32(G.menu + 4), item: cpu.r32(G.menu + 8) };
       if (this.motions && choice.mode < 2) this.choice = choice;   // on to the driver select
+      else if (choice.mode === 2) this.result = { ...choice, game: choice.item - 2, cab: cpu.r32(G.cab) };   // MiniGame_No = item - 2; CABBIE sets the cab
       else this.result = choice;
       return 0;
     });
@@ -181,6 +182,10 @@ export class DreamcastMenu {
     this.frames = 0;
     // The settings: the boot's set-up copies the defaults in (gdc_PlaySong's volume reads +4).
     for (let i = 0; i < 16; i++) cpu.w8(G.options + i, cpu.r8(G.optionDefaults + i));
+    // +14: how many players' records are in use (BupInit starts it at 0, a new name adds
+    // one). At 0 menuCrazyBoxHandler locks every box; one player (the default name, the
+    // records at 0x0C288200 all zero) opens the boxes CheckBoxFlag allows: 1-1 to 1-3 at first.
+    cpu.w8(G.options + 14, 1);
     this.motions = !!opts.motions;
     if (opts.motions) {
       cpu.load(MOTIONS, opts.motions);

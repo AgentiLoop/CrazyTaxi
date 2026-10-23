@@ -6,7 +6,7 @@
 // Assets come from local-assets/ (written by tools/extract_all.py; never bundled).
 import * as THREE from 'three';
 import { KIND_NAMES } from './collision.js';
-import { DreamcastCar, STEP, WHEEL_RADIUS, carFiles } from './dc-car.js';
+import { DreamcastCar, STEP, WHEEL_RADIUS, CRAZY_BOX, carFiles, courseModeOf } from './dc-car.js';
 import { Input } from './input.js';
 import { CITIES } from './start.js';
 import { loadGltf, makeUnlit, GameCamera, packView } from './scene.js';
@@ -20,9 +20,14 @@ import { GameAudio } from './audio.js';
 
 const ASSETS = 'local-assets/';
 const params = new URLSearchParams(location.search);
-const cityName = CITIES[params.get('city')] ? params.get('city') : 'arcade';
-const city = CITIES[cityName];
-const GAME_NO = { arcade: 0, original: 1 }[cityName];
+// ?city=crazybox&game=N: the Crazy Box's game N (MiniGame_No 0-15, the menu's box - 2); its
+// course is the Crazy Box's (BINC3, OBJDC3), but game 15 is driven in the Arcade city.
+const CRAZY = params.get('city') === 'crazybox';
+const MINI_GAME = CRAZY ? Math.min(15, Math.max(0, parseInt(params.get('game'), 10) || 0)) : 0;
+const cityName = CRAZY ? 'crazybox' : CITIES[params.get('city')] ? params.get('city') : 'arcade';
+const GAME_NO = CRAZY ? CRAZY_BOX : { arcade: 0, original: 1 }[cityName];
+const COURSE_MODE = courseModeOf(GAME_NO, MINI_GAME);
+const city = CITIES[['arcade', 'original', 'crazybox'][COURSE_MODE]];
 // The driver from the driver select (boot.js puts it into ?cab=): 0 Axel .. 3 Gus.
 const CAB = Math.min(3, Math.max(0, parseInt(params.get('cab'), 10) || 0));
 // The rules from the menu (?rules=): 0 arcade, 1/2/3 the 3/5/10 minute work.
@@ -74,7 +79,7 @@ function progress(label) {
 
 async function main() {
   say('Loading the game...');
-  const files = carFiles(GAME_NO);
+  const files = carFiles(COURSE_MODE);
   const names = Object.keys(files);
   const [customerManifest, vehicleManifest, ...bytes] = await Promise.all([
     fetchJson('customers/manifest.json'),
@@ -82,7 +87,9 @@ async function main() {
     ...names.map((k) => fetchBytes(files[k])),
   ]);
   const data = Object.fromEntries(names.map((k, i) => [k, bytes[i]]));
-  const stops = customerManifest.stop_sets.find((s) => s.game_no === GAME_NO && s.mini_game_no === 0).stops;
+  // The stops (none in the Crazy Box's games 0-2).
+  const stopSet = customerManifest.stop_sets.find((s) => s.game_no === GAME_NO && s.mini_game_no === MINI_GAME);
+  const stops = stopSet ? stopSet.stops : [];
 
   say('Loading city...');
   const people = new PeopleView(scene, ASSETS);
@@ -128,7 +135,7 @@ async function main() {
   cab.add(cabModel);
   scene.add(cab);
 
-  car = new DreamcastCar(data, { city: GAME_NO, cab: CAB, rules: RULES, audio });
+  car = new DreamcastCar(data, { city: GAME_NO, miniGame: MINI_GAME, cab: CAB, rules: RULES, audio });
   car.aspect = camera.aspect;
   // Browsers play nothing before a gesture: the first key or click starts the sound
   // (a song cued during the countdown picks up where it would be).
@@ -153,6 +160,20 @@ async function main() {
   hudRoot.hidden = false;
 
   let acc = 0, last = performance.now(), frames = 0, fpsT = last, fps = 0;
+  // The Crazy Box's end (callTryAgain: 180 frames after a fault, or after the clear): the
+  // game's TRY AGAIN window - A (Z / Enter) plays the box again, B (X / Escape) goes back
+  // to the title and the menu.
+  const tryAgainLabel = document.createElement('div');
+  tryAgainLabel.style.cssText = 'position:fixed;inset:0;display:grid;place-content:center;text-align:center;font:bold 48px sans-serif;color:#ffe81e;text-shadow:0 2px 6px #000;pointer-events:none';
+  tryAgainLabel.hidden = true;
+  document.body.append(tryAgainLabel);
+  if (CRAZY) {
+    addEventListener('keydown', (e) => {
+      if (tryAgainLabel.hidden) return;
+      if (e.code === 'KeyZ' || e.code === 'Enter') { tryAgainLabel.hidden = true; restart(); }
+      else if (e.code === 'KeyX' || e.code === 'Escape') location.search = '';
+    });
+  }
   const euler = new THREE.Euler(0, 0, 0, 'YXZ');
   const events = [];
   const headPoint = new THREE.Vector3();
@@ -192,6 +213,13 @@ async function main() {
       state.drivePressed = state.reversePressed = false;
       acc -= STEP;
       steps++;
+    }
+    if (CRAZY && tryAgainLabel.hidden) {
+      const box = car.crazyBox();
+      if (box.over) {
+        tryAgainLabel.innerHTML = `${box.excellent ? 'EXCELLENT!' : 'FAULT'}<br>TRY AGAIN?<br><small>A (Z / Enter) yes &nbsp; B (X / Esc) no</small>`;
+        tryAgainLabel.hidden = false;
+      }
     }
 
     // The cab as the game draws it (car.drawn: the pose putPlayerCar saw, a frame

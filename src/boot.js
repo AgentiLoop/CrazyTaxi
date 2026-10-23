@@ -26,7 +26,7 @@ const KEYS = {
   KeyX: PAD.B, Escape: PAD.B, Backspace: PAD.B,
   KeyQ: PAD.START,
 };
-const CITIES = { 0: 'arcade', 1: 'original' };
+const CITIES = { 0: 'arcade', 1: 'original', 2: 'crazybox' };
 
 const status = document.getElementById('status');
 
@@ -98,9 +98,9 @@ async function runMenu() {
           resolve({ city, ...menu.result });
           return;
         }
-        // The Crazy Box (not playable yet): the menu starts over (EXIT goes back to
-        // the title inside the game's code).
-        if (menu.result) console.warn(`menu: ${MODES[menu.result.mode]} is not playable yet`);
+        // EXIT (back to the title) is handled inside the game's code; anything else
+        // starts the menu over.
+        if (menu.result) console.warn(`menu: ${MODES[menu.result.mode]} is not playable`);
         menu.init();
       }
       view.render(menu.draws, menu.screen === 'select' ? {
@@ -116,7 +116,8 @@ async function runMenu() {
 async function boot() {
   if (!new URLSearchParams(location.search).has('city')) {
     const choice = await runMenu();
-    history.replaceState(null, '', `?city=${choice.city}&cab=${choice.cab}&rules=${choice.item}`);
+    const extra = choice.city === 'crazybox' ? `game=${choice.game}` : `rules=${choice.item}`;
+    history.replaceState(null, '', `?city=${choice.city}&cab=${choice.cab}&${extra}`);
     status.style.display = '';
   }
   await import('./main.js');
