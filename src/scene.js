@@ -72,8 +72,21 @@ export function fitSize(w, h, cap) {
   return [Math.max(1, Math.round(w * s)), Math.max(1, Math.round(h * s))];
 }
 
+/**
+ * Which file of a manifest entry to fetch for a size cap: [link, width, height]. The pack's
+ * images pre-shrunk by tools/shrink_texture_pack.py (small/*.webp, ~16 times fewer bytes)
+ * when one is at least as large as the cap draws the pack's, else the pack's own.
+ */
+export function packSource(t, cap) {
+  const full = Math.max(t.pack_width, t.pack_height);
+  const small = t.small ? Math.max(t.small_width, t.small_height) : 0;
+  return small && small >= Math.min(cap, full) ? [t.small, t.small_width, t.small_height]
+    : [t.link, t.pack_width, t.pack_height];
+}
+
 let packEntries = null;      // Promise<Map<key, manifest entry>>
 const packImages = new Map(); // key -> Promise<ImageBitmap | null>
+const packRequests = new Map(); // key -> { url, resolve, textures: Set<THREE.Source> }
 
 function packManifest() {
   return packEntries || (packEntries = fetch(PACK + 'manifest.json')
@@ -82,28 +95,84 @@ function packManifest() {
     .catch(() => new Map()));
 }
 
-// At most PACK_FETCHES pack downloads at once: the browser's few connections per server
-// stay free for the game's own files (the people's models waited behind hundreds).
-const PACK_FETCHES = 2;
+// At most PACK_FETCHES pack downloads at once, each at low fetch priority: the browser's
+// connections per server stay free for the game's own files (the people's models waited
+// behind hundreds at full size).
+const PACK_FETCHES = 4;
 let packFetching = 0;
 const packQueue = [];
-function packFetch(url) {
-  return new Promise((resolve) => { packQueue.push([url, resolve]); packNext(); });
-}
-function packNext() {
-  if (packFetching >= PACK_FETCHES || !packQueue.length) return;
-  const [url, resolve] = packQueue.shift();
-  packFetching++;
-  const p = fetch(url).then((r) => (r.ok ? r.blob() : null)).catch(() => null);
-  p.then(() => { packFetching--; packNext(); });
-  resolve(p);
+
+// What's in view first: the queue is ordered by how near the camera (packView) the
+// textures' meshes are, those outside the view counting 4 times as far, the menu's and the
+// HUD's pictures (no textures) before any, textures on nothing drawn last. Re-ranked at
+// most every RANK_MS as downloads start.
+const RANK_MS = 250;
+let viewScene = null, viewCamera = null, rankedAt = -Infinity;
+
+/** The scene and camera whose view orders the pack's downloads (main.js). */
+export function packView(scene, camera) {
+  viewScene = scene;
+  viewCamera = camera;
 }
 
-function packImage(t) {
+const _frustum = new THREE.Frustum(), _matrix = new THREE.Matrix4(), _sphere = new THREE.Sphere();
+const _eye = new THREE.Vector3();
+
+/** Per texture, the least (distance from the camera, x4 outside the view) of the meshes drawing it. */
+function textureNearness() {
+  const near = new Map();
+  if (!viewScene || !viewCamera) return near;
+  viewCamera.getWorldPosition(_eye);
+  _frustum.setFromProjectionMatrix(_matrix.multiplyMatrices(viewCamera.projectionMatrix, viewCamera.matrixWorldInverse));
+  viewScene.traverseVisible((o) => {
+    if (!o.isMesh || !o.material) return;
+    const g = o.geometry;
+    if (!g.boundingSphere) g.computeBoundingSphere();
+    _sphere.copy(g.boundingSphere).applyMatrix4(o.matrixWorld);
+    const d = Math.max(0, _sphere.center.distanceTo(_eye) - _sphere.radius) * (_frustum.intersectsSphere(_sphere) ? 1 : 4);
+    for (const m of Array.isArray(o.material) ? o.material : [o.material]) {
+      const t = m && m.map && m.map.source;   // clones of a texture share it
+      if (t && !(near.get(t) <= d)) near.set(t, d);
+    }
+  });
+  return near;
+}
+
+function rankPackQueue() {
+  const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
+  if (now - rankedAt < RANK_MS || packQueue.length < 2) return;
+  rankedAt = now;
+  const near = textureNearness();
+  const score = (req) => {
+    if (!req.textures.size) return -1;
+    let s = Infinity;
+    for (const t of req.textures) s = Math.min(s, near.has(t) ? near.get(t) : Infinity);
+    return s;
+  };
+  const scored = packQueue.map((req) => [score(req), req]);
+  scored.sort((a, b) => (a[0] === b[0] ? 0 : a[0] - b[0]));
+  scored.forEach(([, req], i) => { packQueue[i] = req; });
+}
+
+function packNext() {
+  if (packFetching >= PACK_FETCHES || !packQueue.length) return;
+  rankPackQueue();
+  const req = packQueue.shift();
+  packFetching++;
+  const p = fetch(req.url, { priority: 'low' }).then((r) => (r.ok ? r.blob() : null)).catch(() => null);
+  p.then(() => { packFetching--; packNext(); });
+  req.resolve(p);
+}
+
+/** The pack's image for a manifest entry; `texture` (a model's texture it replaces) ranks its download. */
+function packImage(t, texture) {
   let p = packImages.get(t.png);
   if (!p) {
-    const [w, h] = fitSize(t.pack_width, t.pack_height, HIRES);
-    p = packFetch(PACK + t.link)
+    const [url, width, height] = packSource(t, HIRES);
+    const [w, h] = fitSize(width, height, HIRES);
+    const req = { url: PACK + url, resolve: null, textures: new Set() };
+    packRequests.set(t.png, req);
+    p = new Promise((resolve) => { req.resolve = resolve; packQueue.push(req); packNext(); })
       .then((blob) => blob && createImageBitmap(blob, {
         imageOrientation: 'flipY', premultiplyAlpha: 'none', colorSpaceConversion: 'none',
         resizeWidth: w, resizeHeight: h, resizeQuality: 'high',
@@ -111,6 +180,7 @@ function packImage(t) {
       .catch(() => null);
     packImages.set(t.png, p);
   }
+  if (texture) packRequests.get(t.png).textures.add(texture.source);
   return p;
 }
 
@@ -128,7 +198,7 @@ export async function hiresImage(png, original) {
 /** The URL of the pack's image (upright) for an extracted picture, or null. */
 export async function hiresLink(png) {
   const t = HIRES ? (await packManifest()).get(png) : null;
-  return t ? PACK + t.link : null;
+  return t ? PACK + packSource(t, HIRES)[0] : null;
 }
 
 async function useTexturePack(gltf) {
@@ -141,8 +211,9 @@ async function useTexturePack(gltf) {
     const t = entries.get(packKey(def && parser.json.images[def.source].uri));
     if (!texture || !t) return;
     const source = texture.source;
+    const image = packImage(t, texture);
     if (!swapped.has(source)) {
-      swapped.set(source, packImage(t).then((img) => {
+      swapped.set(source, image.then((img) => {
         if (!img) return false;
         const before = textureAlpha(texture);
         if (before !== 'solid' && textureAlpha({ image: img }) === 'solid') return false;

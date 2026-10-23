@@ -4,7 +4,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import * as THREE from 'three';
-import { makeUnlit, blendPass, hiresCap, packKey, fitSize, hiresImage, hiresLink } from '../src/scene.js';
+import { makeUnlit, blendPass, hiresCap, packKey, fitSize, hiresImage, hiresLink, packSource } from '../src/scene.js';
 
 const mesh = (name, material, colours) => {
   const g = new THREE.BufferGeometry();
@@ -67,6 +67,15 @@ test('the hi-res texture pack: ?hires picks the size cap, glTF image URIs map to
   assert.deepEqual(fitSize(1024, 1024, 512), [512, 512]);
   assert.deepEqual(fitSize(3277, 1638, 512), [512, 256]);
   assert.deepEqual(fitSize(128, 64, 512), [128, 64]);
+});
+test('the hi-res texture pack: the pre-shrunk image is fetched when it is as large as the cap draws the pack image', () => {
+  const t = { link: 'a.jpg', pack_width: 1024, pack_height: 1024, small: 'small/a.webp', small_width: 512, small_height: 512 };
+  assert.deepEqual(packSource(t, 512), ['small/a.webp', 512, 512]);
+  assert.deepEqual(packSource(t, 256), ['small/a.webp', 512, 512]);
+  assert.deepEqual(packSource(t, 1024), ['a.jpg', 1024, 1024]);
+  const tiny = { link: 'b.png', pack_width: 256, pack_height: 128, small: 'small/b.webp', small_width: 256, small_height: 128 };
+  assert.deepEqual(packSource(tiny, 2048), ['small/b.webp', 256, 128]);
+  assert.deepEqual(packSource({ link: 'c.jpg', pack_width: 1024, pack_height: 512 }, 512), ['c.jpg', 1024, 512]);
 });
 test('the hi-res texture pack is off without ?hires: no pack pictures for the menu and the HUD', async () => {
   assert.equal(await hiresLink('landmarks/LANDDC1/00.png'), null);

@@ -9,7 +9,7 @@ import { KIND_NAMES } from './collision.js';
 import { DreamcastCar, STEP, WHEEL_RADIUS, carFiles } from './dc-car.js';
 import { Input } from './input.js';
 import { CITIES } from './start.js';
-import { loadGltf, makeUnlit, GameCamera, letterbox } from './scene.js';
+import { loadGltf, makeUnlit, GameCamera, letterbox, packView } from './scene.js';
 import { PeopleView } from './people.js';
 import { Hud, HUD_CSS } from './hud.js';
 import { TrafficView } from './traffic-view.js';
@@ -37,6 +37,7 @@ scene.fog = new THREE.Fog(SKY, 5000, 13000);
 // The Dreamcast's 4:3 picture (nlPerspective: near 3, far 15000), letterboxed in the window.
 const camera = new THREE.PerspectiveCamera(45, 4 / 3, 3, 15000);
 const gameCamera = new GameCamera(camera);
+packView(scene, camera);   // ?hires=1: the pack's textures in view download first
 
 function resize() {
   const box = letterbox(innerWidth, innerHeight);
