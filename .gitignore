@@ -10,3 +10,5 @@ dist/
 *.cdi
 *.chd
 local-assets/
+__pycache__/
+*.pyc
