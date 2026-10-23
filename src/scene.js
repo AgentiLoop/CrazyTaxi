@@ -46,8 +46,9 @@ export function loadGltf(url, onProgress) {
 // as they decode. The pack's images are upright, the extracted PNGs (and so the models'
 // UVs) upside down: decoded flipped. They are 4-32 times the game's size, ~1.7 GB of
 // texels for a city at full size, so they are scaled to at most 512 texels a side
-// (?hires=N: at most N) and drawn mipmapped. A texture with see-through texels keeps the
-// game's image when the pack's has none (most of the pack is JPEG). The menu's sprites
+// (?hires=N: at most N) and drawn mipmapped. A texture with see-through texels whose pack
+// image has none (most of the pack is JPEG: the shop signs) gets the pack's image cut by
+// the game's alpha, scaled up. The menu's sprites
 // (src/menu-view.js) and the HUD's destination pictures (src/hud.js) use it too.
 const PACK = 'local-assets/texture_pack/';
 
@@ -203,11 +204,22 @@ export async function hiresImage(png, original) {
   const t = HIRES ? (await packManifest()).get(png) : null;
   const img = t ? await packImage(t) : null;
   if (!img || textureAlpha({ image: original }) === 'solid' || textureAlpha({ image: img }) !== 'solid') return img;
+  return cutByAlpha(img, original);
+}
+
+/**
+ * The pack's image (no alpha: a JPEG) cut by the game's texture's alpha, scaled up smoothly
+ * (the shop signs, logos and lamps on see-through quads), or null when it can't be drawn.
+ * Both are stored the same way up (packImage decodes flipped, the extracted PNGs are upside down).
+ */
+function cutByAlpha(img, original) {
   if (typeof OffscreenCanvas === 'undefined') return null;
   const canvas = new OffscreenCanvas(img.width, img.height);
   const ctx = canvas.getContext('2d');
   ctx.drawImage(img, 0, 0);
   ctx.globalCompositeOperation = 'destination-in';
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = 'high';
   ctx.drawImage(original, 0, 0, img.width, img.height);
   return canvas.transferToImageBitmap();
 }
@@ -233,7 +245,9 @@ async function useTexturePack(gltf) {
       swapped.set(source, image.then((img) => {
         if (!img) return false;
         const before = textureAlpha(texture);
-        if (before !== 'solid' && textureAlpha({ image: img }) === 'solid') return false;
+        // A see-through texture whose pack image is a JPEG (the shop signs): cut by the game's alpha.
+        if (before !== 'solid' && textureAlpha({ image: img }) === 'solid') img = cutByAlpha(img, texture.image);
+        if (!img) return false;
         textureAlphas.set(img, before);  // drawn as the game's texture is (see Draw order)
         source.data = img;
         return true;
