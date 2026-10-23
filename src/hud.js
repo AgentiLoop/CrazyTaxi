@@ -3,9 +3,9 @@
 // name, PutLandmark), the fare/rating card, "TIME UP", the start countdown and the
 // D / R gear box (bottom right), all read from the game's own GSystem and customer
 // tasks (src/dc-car.js; the arrow to the destination is 3D, src/nav-arrow.js).
-// Layout and colours are approximations of the Dreamcast HUD (of its sprites in
-// local-assets/sprites only the gear box is used; the fare board's drums are DOM
-// text); the clock (M'SS"hh, yellow, top left) and the customer's time (over the
+// Layout and colours are approximations of the Dreamcast HUD: the fare board's lit
+// TOTAL EARNED / FARE headers and their footer bars are always the texture pack's
+// SPRGAME sprites, the amounts between them DOM text on teller drums; the clock (M'SS"hh, yellow, top left) and the customer's time (over the
 // passenger in the cab, green / yellow / red by the rating still reachable) use the
 // cartoon digits (src/cartoon-digits.js). Sizes are fractions of the 640 x 480
 // picture's height (#hud is the whole window; cqh = 1% of its height), so the HUD
@@ -17,6 +17,7 @@ import { hiresLink } from './scene.js';
 export const RATING_NAMES = ['NORMAL', 'FAST', 'SPEEDY'];
 const LANDMARK_DIR = { 'LANDDC1.AFS': 'landmarks/LANDDC1/', 'LANDDC2.AFS': 'landmarks/LANDDC2/' };
 const CARD_FRAMES = 150;
+const BOARD_PACK = 'local-assets/texture_pack/sprites/SPRGAME/';   // 0177 TOTAL EARNED, 0017 FARE (lit), 0178 footer
 const GEAR_SPRITES = ['sprites/SPRCOMM/0018.png', 'sprites/SPRCOMM/0017.png'];   // [reverse, drive]
 
 export class Hud {
@@ -27,8 +28,8 @@ export class Hud {
     root.innerHTML = `
       <div id="hud-time"><div id="hud-clock"><span id="hud-clock-main"></span><span id="hud-clock-sub"></span></div></div>
       <div id="hud-board">
-        <div class="label">TOTAL EARNED</div><div class="box"><span class="dollar">$</span><span id="hud-cash">0.00</span></div>
-        <div class="label">FARE</div><div class="box fare"><span class="dollar">$</span><span id="hud-fare">0.00</span></div>
+        <img class="head" src="${BOARD_PACK}0177.png" alt="TOTAL EARNED"><div class="drums" id="hud-cash"></div><img class="foot" src="${BOARD_PACK}0178.png" alt="">
+        <div class="fare"><img class="head" src="${BOARD_PACK}0017.png" alt="FARE"><div class="drums" id="hud-fare"></div><img class="foot" src="${BOARD_PACK}0178.png" alt=""></div>
       </div>
       <div id="hud-bar"><div id="hud-bar-fill"></div></div>
       <div id="hud-rider" hidden></div>
@@ -64,8 +65,8 @@ export class Hud {
     this.digits.set(e['clock-main'], clock.main);
     this.digits.set(e['clock-sub'], clock.sub);
     e.clock.classList.toggle('low', gs.time <= 600);
-    e.cash.textContent = formatMoney(gs.cash).slice(1);
-    e.fare.textContent = formatMoney(gs.fare).slice(1);
+    setDrums(e.cash, formatMoney(gs.cash));
+    setDrums(e.fare, formatMoney(gs.fare));
     const gear = car.gear === 0 ? 0 : 1;
     if (gear !== this.gear) { this.gear = gear; e.gear.src = this.gearSrc[gear]; }
 
@@ -134,6 +135,17 @@ export class Hud {
   }
 }
 
+/** "$25.32" as one teller drum per character ("$ 25.32"), rebuilt only when it changes. */
+// The teller drums of the arcade: "$", six dollar drums (blank when unused, the amount right-aligned), a narrow ".", two smaller underlined cent drums.
+function setDrums(el, text) {
+  if (el.dataset.text === text) return;
+  el.dataset.text = text;
+  const [dollars, cents = '00'] = text.replace('$', '').split('.');
+  el.innerHTML = '<span class="cur">$</span>' +
+    [...dollars.padStart(6, ' ')].map((c) => `<span>${c === ' ' ? '' : c}</span>`).join('') +
+    '<span class="dot">.</span>' + [...cents].map((c) => `<span class="cent"><u>${c}</u></span>`).join('');
+}
+
 export const HUD_CSS = DIGITS_CSS + `
 #hud { position: fixed; inset: 0; pointer-events: none; container-type: size; font-family: "Arial Black", Impact, system-ui, sans-serif; color: #fff; text-shadow: 0 0.2cqh 0.2cqh #000, 0 0 0.6cqh #000; }
 #hud-time { position: absolute; left: 2.5cqh; top: 1.67cqh; text-shadow: none; }
@@ -145,15 +157,22 @@ export const HUD_CSS = DIGITS_CSS + `
 #hud-rider .cd + .cd { margin-left: -0.04em; }
 #hud-rider.yellow { color: #ffe81e; } #hud-rider.red { color: #ff4040; }
 /* The fare board (hudDrawFareFrame: around 532, 96): the cash and the fare on white drums. */
-#hud-board { position: absolute; right: 5.87cqh; top: 6.5%; width: 38.67cqh; text-align: center; }
-#hud-board .label { font-size: 3.4cqh; line-height: 1.2; font-style: italic; letter-spacing: 0.06em; color: #fff; -webkit-text-stroke: 0.5px #b01818; text-shadow: 0 1px 1px #000, 0 0 3px #000; }
-#hud-board .box { display: flex; align-items: baseline; margin: 0.3cqh 0 0.6cqh; padding: 0 1.2cqh; background: #fff; border: 0.4cqh solid #2a3b6e; border-radius: 0.8cqh; box-shadow: 0 0.4cqh 0.6cqh rgba(0,0,0,.5); color: #1c2a80; font-size: 3.8cqh; line-height: 1.25; text-shadow: none; font-variant-numeric: tabular-nums; }
-#hud-board .box .dollar { color: #2a3b6e; margin-right: auto; }
-#hud-board .box.fare { margin-left: 10%; font-size: 5.4cqh; }
+#hud-board { position: absolute; right: 1.67cqh; top: 1.67cqh; width: 38.67cqh; text-align: center; }
+#hud-board img { display: block; width: 100%; }
+#hud-board .foot { width: 92%; margin: 0 auto; }
+#hud-board .fare { width: 82%; margin: 0.4cqh 0 0 auto; }
+/* One flush strip of drums under the header, as wide as the header between its red lamps. */
+#hud-board .drums { display: flex; width: 88%; margin: -0.2cqh auto 0; font-size: 3.6cqh; line-height: 1.2; text-shadow: none; border: 0.25cqh solid #1a1a1a; border-radius: 0.5cqh; overflow: hidden; box-shadow: 0 0.3cqh 0.5cqh rgba(0,0,0,.6); }
+#hud-board .fare .drums { width: 94%; font-size: 3.9cqh; }
+#hud-board .drums span { flex: 1 1 0; min-width: 0; color: #111; font-weight: 900; background: linear-gradient(#5e4b2c 0%, #d8cba0 16%, #fffbea 48%, #e6dbb4 74%, #5e4b2c 100%); box-shadow: inset -0.04em 0 0 #3a3020, inset 0.03em 0 0 rgba(255,255,255,.5); }
+#hud-board .drums span.cur { flex-grow: 1.1; }
+#hud-board .drums span.dot { flex-grow: 0.45; }
+#hud-board .drums span.cent { font-size: 0.72em; line-height: 1.667; }
+#hud-board .drums span.cent u { text-decoration-thickness: 0.09em; text-underline-offset: 0.12em; }
 #hud-bar { position: absolute; left: 2.5cqh; top: 10.83cqh; width: 27cqh; height: 1.67cqh; background: rgba(0,0,0,.5); border: 0.2cqh solid #fff; border-radius: 0.4cqh; }
 #hud-bar-fill { height: 100%; width: 100%; }
 #hud-bar-fill.green { background: #30e030; } #hud-bar-fill.yellow { background: #f0d020; } #hud-bar-fill.red { background: #f03030; }
-#hud-dest { position: absolute; right: 5.87cqh; top: 33%; width: 16.67cqh; text-align: center; font-size: 1.56cqh; }
+#hud-dest { position: absolute; right: 1.67cqh; top: 33%; width: 16.67cqh; text-align: center; font-size: 1.56cqh; }
 #hud-landmark { width: 13.33cqh; height: 13.33cqh; image-rendering: pixelated; border: 0.2cqh solid #fff; background: #000; }
 #hud-landmark.pack { image-rendering: auto; transform: scaleY(-1); }  /* the extracted landmark PNGs are upright (sky on top), the pack's are stored upside down */
 /* The gear box: a 64 x 64 sprite centred at (582, 420) of 640 x 480. */
