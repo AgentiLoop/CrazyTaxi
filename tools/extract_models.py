@@ -327,7 +327,7 @@ class Gltf(object):
         self.texture_bank, self.textures, self.texture_root = texture_bank, textures, texture_root
         self.material_ids, self.image_ids, self.sampler_ids, self.texture_ids = {}, {}, {}, {}
         self.texture_dir, self.baked_images = texture_dir, {}
-        self.double_sided_blend = False  # set for cabs: see-through glass must show from inside too
+        self.double_sided = False  # set for cabs: glass and window frames must show from inside too
 
     def view(self, payload, target):
         while len(self.blob) % 4:
@@ -385,7 +385,7 @@ class Gltf(object):
 
     def material_key(self, record):
         key = material_key(record, self.textures)
-        if self.double_sided_blend and key[2] == "BLEND":
+        if self.double_sided:
             key = key[:3] + (True,) + key[4:]
         return key + (record.get("decal_face"),)
 
