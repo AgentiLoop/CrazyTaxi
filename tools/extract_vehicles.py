@@ -338,6 +338,7 @@ def extract(source, textures, output):
             wheels = list(struct.unpack_from("<15f", executable, wheel_pointers[k] - LOAD))
             points = list(struct.unpack_from("<12f", executable, point_pointers[k] - LOAD))
             builder = Builder("TEXDC0.BIN", banks["TEXDC0.BIN"], root, data, base, ("car", "alternates"), textures)
+            builder.gltf.double_sided_blend = True
             for scene, label, address, translation in cab_parts(models, wheels):
                 builder.put(scene, label, address, translation)
             paint = builder.paint()
