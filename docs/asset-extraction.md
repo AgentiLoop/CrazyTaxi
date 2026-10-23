@@ -574,6 +574,22 @@ in the USA files; no regional address is reused:
   positions. Every other entry goes to the "alternates" scene: set[5] (drawn
   instead of set[6] with a fare on board), set[7]/[8] (roof height), set[9..12]
   (wheel-sized, placed at the wheel positions) and set[13] (a second body).
+* **Cab shadows (PutMVObj, USA `0x0C03858C`; table `0x0C0ED5A4`).** putPlayerCar
+  calls PutMVObj(cab type) in the body's matrix; it hands the cab's zero-terminated
+  list of shadow pieces to the library's shadow volume routine (`0x0C07B630`). The
+  table is found as the one run of at least five pointers to lists of valid pieces
+  (entry 5 repeats entry 4). A piece is `{+0 vertices*, +4 edges*, +8 faces*, +0xC
+  u16 vertex count, +0xE edge count, +0x10 face count}` with the three arrays back to
+  back just before it: vertices 12 B, edges 4 B (two u16 vertices), faces 24 B
+  (normal, three u16 vertices, three u16 edges). The pieces are open shells: 19, 10,
+  5, 8 and 4 per cab. Each goes to a third scene, "shadow", as a node without a
+  material (the faces as triangles; extras `normals`, `edges`, `face_edges`).
+  src/cab-shadow.js builds the volume each frame as the routine does: the faces
+  facing away from the light (`dot(normal, light) < 0`) at the piece and 100 units
+  away from the light, joined along the edges that only one of those faces uses.
+  Every placed model node also records `shadowed`, the number of its records with
+  the PCW shadow bit (7), which decides what a modifier volume darkens: none of the
+  cab body's records have it, all of the wheels' do.
 
 Checks:
 

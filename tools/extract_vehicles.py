@@ -26,6 +26,18 @@ the USA disassembly of putCarModel and putPlayerCar):
 * Cab: set[4] body and set[6] (set[5] with a fare on board) are drawn 1.2 below the car
   origin; wheels set[0..3] at the +0x6C positions (the game's suspension sets the height;
   the table's height is used). The other set entries go to an "alternates" scene.
+* Cab shadow (PutMVObj, USA 0x0C03858C, called by putPlayerCar in the body's matrix, after
+  the 1.2 drop): the cab's entry of a table of piece lists (USA 0x0C0ED5A4, found as the
+  run of at least five pointers to zero-terminated lists of valid pieces) is drawn as a
+  shadow volume by the library routine 0x0C07B630. A piece (in the executable) is
+  {+0 vertices*, +4 edges*, +8 faces*, +0xC u16 vertex count, +0xE edge count, +0x10 face
+  count}, the three arrays back to back just before it: vertices 12 B (x, y, z), edges 4 B
+  (u16 vertex a, b), faces 24 B (normal x, y, z, u16 vertices a, b, c, u16 edges). The
+  pieces are open shells; each goes to the "shadow" scene as a node (no material) whose
+  triangles are the faces, with extras normals / edges / face_edges for the volume
+  builder (src/cab-shadow.js). Every placed model node's extras carry "shadowed": how many
+  of its records have the PCW shadow bit (7) set - the PowerVR darkens only those inside a
+  modifier volume (the cab body has none; its wheels have all).
 
 Paint (USA putCarModel and the library record drawer at 0x0C080E20): putCarModel calls
 SetFadeColorBaseMulti(r, g, b) with the car's colour from the table above, draws only the
@@ -62,6 +74,7 @@ MODEL_WORDS = list(range(0, 6)) + list(range(6, 22)) + list(range(22, 28))
 CAB_SETS = 5
 CAB_BODY_DROP = 1.2  # putPlayerCar: nlTranslate(0, -1.2, 0) before the body (USA 0x0C02045C)
 CAB_SLOTS = {0: "wheel_0", 1: "wheel_1", 2: "wheel_2", 3: "wheel_3", 4: "body", 5: "rear_5", 6: "rear_6"}
+PCW_SHADOW = 0x80  # PowerVR parameter control word bit 7: the polygon is affected by modifier volumes
 
 
 def f32(word):
@@ -194,6 +207,60 @@ def cab_sets(executable, table, sets):
     return result
 
 
+def shadow_piece(executable, p):
+    """The piece at address p (see the module docstring), or None if p is not one."""
+    if p % 4 or not LOAD + 0x14 <= p <= LOAD + len(executable) - 0x14:
+        return None
+    verts, edges, faces = struct.unpack_from("<3I", executable, p - LOAD)
+    nv, ne, nf = struct.unpack_from("<3H", executable, p - LOAD + 12)
+    if not (nv and ne and nf and edges == verts + 12 * nv and faces == edges + 4 * ne and p == faces + 24 * nf
+            and verts >= LOAD):
+        return None
+    vertices = [list(struct.unpack_from("<3f", executable, verts - LOAD + 12 * i)) for i in range(nv)]
+    pairs = [list(struct.unpack_from("<2H", executable, edges - LOAD + 4 * i)) for i in range(ne)]
+    normals, corners, face_edges = [], [], []
+    for i in range(nf):
+        o = faces - LOAD + 24 * i
+        normals.append(list(struct.unpack_from("<3f", executable, o)))
+        corners.append(list(struct.unpack_from("<3H", executable, o + 12)))
+        face_edges.append(list(struct.unpack_from("<3H", executable, o + 18)))
+    if any(k >= nv for e in pairs + corners for k in e) or any(k >= ne for e in face_edges for k in e):
+        return None
+    return dict(address=p, vertices=vertices, edges=pairs, normals=normals, faces=corners, face_edges=face_edges)
+
+
+def shadow_list(executable, p):
+    """The pieces of the zero-terminated list at p, or None."""
+    pieces = []
+    while p % 4 == 0 and LOAD <= p <= LOAD + len(executable) - 4:
+        word = struct.unpack_from("<I", executable, p - LOAD)[0]
+        if word == 0:
+            return pieces or None
+        piece = shadow_piece(executable, word)
+        if piece is None:
+            return None
+        pieces.append(piece)
+        p += 4
+    return None
+
+
+def find_shadow_table(executable):
+    """(address, [pieces per cab]): the one run of at least CAB_SETS pointers to piece lists."""
+    w = words(executable)
+    lists = {}
+
+    def at(i):
+        if i not in lists:
+            lists[i] = shadow_list(executable, w[i]) if 0 <= i < len(w) else None
+        return lists[i]
+
+    found = [i for i in range(len(w) - CAB_SETS) if at(i) is not None and at(i - 1) is None
+             and all(at(i + k) is not None for k in range(CAB_SETS))]
+    if len(found) != 1:
+        raise ValueError("expected one cab shadow table, found %d" % len(found))
+    return LOAD + 4 * found[0], [at(found[0] + k) for k in range(CAB_SETS)]
+
+
 class Builder(object):
     """One vehicle GLB: named scenes, one node per placed model, meshes shared by address."""
 
@@ -201,7 +268,7 @@ class Builder(object):
         self.gltf = Gltf(bank_name, bank, root, texture_dir)
         self.gltf.doc["scenes"] = [dict(name=s, nodes=[]) for s in scenes]
         self.data, self.base, self.meshes, self.triangles, self.placed = data, base, {}, 0, []
-        self.bodies = set()
+        self.bodies, self.shadowed = set(), {}
 
     def put(self, scene, label, address, translation=None):
         offset = address - self.base
@@ -210,10 +277,11 @@ class Builder(object):
             mark_decals(model, self.gltf.textures)
             mesh, tris = self.gltf.mesh("%s_%06x" % (label, offset), model)
             self.meshes[address] = mesh
+            self.shadowed[address] = sum(1 for r in model["records"] if r["pcw"] & PCW_SHADOW)
             self.triangles += tris
         if label == "body" and self.meshes[address] is not None:
             self.bodies.add(self.meshes[address])
-        item = dict(name="%s_%06x" % (label, offset), extras=dict(offset=offset))
+        item = dict(name="%s_%06x" % (label, offset), extras=dict(offset=offset, shadowed=self.shadowed[address]))
         if self.meshes[address] is not None:
             item["mesh"] = self.meshes[address]
         if translation and any(translation):
@@ -223,6 +291,19 @@ class Builder(object):
         self.gltf.doc["scenes"][scene]["nodes"].append(index)
         self.placed.append(dict(scene=self.gltf.doc["scenes"][scene]["name"], part=label, offset=offset,
                                 translation=item.get("translation", [0.0, 0.0, 0.0])))
+
+    def put_shadow(self, scene, piece):
+        """A shadow piece as a node: its faces as triangles (no material), the volume data in extras."""
+        gltf = self.gltf
+        positions = [c for v in piece["vertices"] for c in v]
+        indices = [k for f in piece["faces"] for k in f]
+        gltf.doc["meshes"].append(dict(name="shadow_%08x" % piece["address"], primitives=[dict(
+            attributes=dict(POSITION=gltf.accessor(positions, 5126, 3, 34962, True)),
+            indices=gltf.accessor(indices, 5123, 1, 34963))]))
+        gltf.doc["nodes"].append(dict(name="shadow_%08x" % piece["address"], mesh=len(gltf.doc["meshes"]) - 1,
+                                      extras=dict(address=piece["address"], normals=piece["normals"],
+                                                  edges=piece["edges"], face_edges=piece["face_edges"])))
+        gltf.doc["scenes"][scene]["nodes"].append(len(gltf.doc["nodes"]) - 1)
 
     def paint(self, paints=(), default=0):
         """Bake every decal-alpha material; body meshes get paints[default] and one variant per paint."""
@@ -286,6 +367,7 @@ def extract(source, textures, output):
     for models in sets:
         if not all(m == 0 or m in poldc0 for m in models):
             raise ValueError("cab set entry is not a POLDC0 model")
+    shadow_table, shadows = find_shadow_table(executable)
     banks = dict((b["source"], b["textures"]) for b in json.loads((textures / "manifest.json").read_text())["banks"])
     root = "../../%s/" % textures.name
     manifest = dict(
@@ -293,7 +375,8 @@ def extract(source, textures, output):
         sources=dict([("1ST_READ.BIN", dict(size=len(executable), sha256=digest(executable)))] +
                      [(n, dict(size=len(f[0]), sha256=digest(f[0]), base=f[1])) for n, f in sorted(files.items())]),
         car_table=traffic["table"], car_types=traffic["count"], colour_table=traffic["colour_table"],
-        colours=traffic["colours"], cab_table=cab_table, cab_body_drop=CAB_BODY_DROP, traffic=[], cabs=[])
+        colours=traffic["colours"], cab_table=cab_table, cab_body_drop=CAB_BODY_DROP,
+        cab_shadow_table=shadow_table, traffic=[], cabs=[])
     gallery = ['<!doctype html><meta charset="utf-8"><title>Crazy Taxi vehicles</title>',
                '<style>body{font-family:system-ui;background:#222;color:#eee}td{padding:2px 8px}'
                '.c{display:inline-block;width:10px;height:10px;margin:0 1px}</style>',
@@ -337,17 +420,21 @@ def extract(source, textures, output):
         for k, models in enumerate(sets):
             wheels = list(struct.unpack_from("<15f", executable, wheel_pointers[k] - LOAD))
             points = list(struct.unpack_from("<12f", executable, point_pointers[k] - LOAD))
-            builder = Builder("TEXDC0.BIN", banks["TEXDC0.BIN"], root, data, base, ("car", "alternates"), textures)
+            builder = Builder("TEXDC0.BIN", banks["TEXDC0.BIN"], root, data, base, ("car", "alternates", "shadow"),
+                              textures)
             builder.gltf.double_sided_blend = True
             for scene, label, address, translation in cab_parts(models, wheels):
                 builder.put(scene, label, address, translation)
             paint = builder.paint()
+            for piece in shadows[k]:
+                builder.put_shadow(2, piece)
             relative = "cabs/cab_%d.glb" % k
             blob = builder.glb()
             (staging / relative).write_bytes(blob)
             manifest["cabs"].append(dict(index=k, name=cabbies[k], set=set_pointers[k], models=models,
                                          wheel_positions=[round(v, 6) for v in wheels],
                                          points_70=[round(v, 6) for v in points], paint=paint, parts=builder.placed,
+                                         shadow_pieces=[p["address"] for p in shadows[k]],
                                          glb=relative, glb_sha256=digest(blob), triangles=builder.triangles))
             gallery.append('<tr><td>%d</td><td><a href="%s">%s</a></td><td>%s</td><td>%d triangles</td></tr>'
                            % (k, relative, relative, cabbies[k], builder.triangles))

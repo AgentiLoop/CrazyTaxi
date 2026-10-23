@@ -14,6 +14,7 @@ import { Customers } from './customers.js';
 import { CustomerView } from './customer-view.js';
 import { Hud, HUD_CSS } from './hud.js';
 import { TrafficView } from './traffic-view.js';
+import { CabShadow } from './cab-shadow.js';
 
 const ASSETS = 'local-assets/';
 const params = new URLSearchParams(location.search);
@@ -114,6 +115,7 @@ async function main() {
   scene.add(cab);
 
   const car = new DreamcastCar({ exe, courses: courseBytes, collision: collisionBytes }, { city: GAME_NO });
+  const cabShadow = new CabShadow(scene, cabGltf, car, cabModel);   // PutMVObj: the cab's shadow volume
   const input = new Input();
   const gs = new GameSystem();
   let customers;
@@ -176,6 +178,7 @@ async function main() {
       w.pivot.rotation.y = car.wheelSteer[w.index];
       w.mesh.rotation.x = car.wheelSpin;
     }
+    cabShadow.update();
 
     customers.events.length = 0;
     customers.events.push(...events);
@@ -196,7 +199,7 @@ async function main() {
   // For tests and probes.
   window.__game = {
     car, collision, scene, camera, gameCamera, renderer, cityName, wheelRadius: WHEEL_RADIUS,
-    gs, get customers() { return customers; }, view, traffic, restart,
+    gs, get customers() { return customers; }, view, traffic, cabShadow, restart,
   };
 }
 
