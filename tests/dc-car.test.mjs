@@ -27,18 +27,47 @@ const CAR = 0x0C176E4C;
 const MOVING = 4, PARKED = 0x10, ON_SCREEN = 0x10000;
 const RAIL = (type) => type >= 15;
 
+/**
+ * Bit for bit, except that two values both within 1e-9 of zero count as equal: a standing
+ * traffic car's speed (1e-12, zero in effect) depends on the last bit of fsca, which both
+ * simulators take from their libm's sine instead of the SH-4's table. Returns the count
+ * of such near-zero differences.
+ */
+function assertSame(got, want, path) {
+  if (Array.isArray(want)) {
+    assert.equal(got.length, want.length, `${path}: length`);
+    let n = 0;
+    for (let i = 0; i < want.length; i++) n += assertSame(got[i], want[i], `${path}[${i}]`);
+    return n;
+  }
+  if (want && typeof want === 'object') {
+    assert.deepEqual(Object.keys(got).sort(), Object.keys(want).sort(), `${path}: keys`);
+    let n = 0;
+    for (const k of Object.keys(want)) n += assertSame(got[k], want[k], `${path}.${k}`);
+    return n;
+  }
+  if (got === want) return 0;
+  if (typeof got === 'number' && Math.abs(got) < 1e-9 && Math.abs(want) < 1e-9) return 1;
+  return assert.fail(`${path}: ${got} !== ${want}`);
+}
+
 for (const [city, name] of [[0, 'car-trace-arcade.json'], [1, 'car-trace-original.json']]) {
-  test(`city ${city}: every frame of the recorded run - the cab and every traffic car - matches the simulator bit for bit`, { skip: !have }, () => {
+  test(`city ${city}: every frame of the recorded run - the countdown with the start camera, then driving: the cab, the camera and every traffic car - matches the simulator bit for bit`, { skip: !have }, () => {
     const car = make(city);
     const trace = fixture(name);
+    car.startIntro();           // the countdown begins: SetStartCamera
     assert.deepEqual([car.pos.x, car.pos.y, car.pos.z], trace.start.pos);
     assert.equal(car.carCount, trace.start.carEntryNum);
-    let drawn = 0, live = 0;
+    assert.equal(trace.countdown, 366);
+    let drawn = 0, live = 0, nearZero = 0;
     for (let f = 0; f < trace.frames.length; f++) {
       const fr = trace.frames[f], inp = fr.input;
       car.stickX = inp.steer;    // the keyboard shaping is not part of the game
+      car.intro = fr.intro;
+      car.hold = fr.hold;
       car.update({ steer: inp.steer, accel: inp.accel, brake: inp.brake, drive: !!inp.drive, reverse: !!inp.reverse });
       const cpu = car.cpu;
+      const cam = car.camera();
       const got = {
         pos: [car.pos.x, car.pos.y, car.pos.z],
         ang: [cpu.rs16(CAR + 0x84), cpu.rs16(CAR + 0x86), cpu.rs16(CAR + 0x88)],
@@ -48,13 +77,15 @@ for (const [city, name] of [[0, 'car-trace-arcade.json'], [1, 'car-trace-origina
         carEntryNum: car.carCount, trafficLevel: car.trafficLevel,
         cars: car.cars.map((c) => c.raw),
         live: car.liveCars().map((c) => c.raw),
+        camera: { eye: cam.eye, target: cam.target, angles: cam.angles, mode: cam.mode, fov: cam.fov, view: Array.from(cam.view) },
       };
-      const { input, ...want } = fr;
-      assert.deepEqual(got, want, `frame ${f}`);
+      const { input, intro, hold, ...want } = fr;
+      nearZero += assertSame(got, want, `frame ${f}`);
       drawn += got.cars.length; live += got.live.length;
     }
     assert.equal(car.recoveries, 0);
     assert.ok(drawn > 1000 && live > 4000, `${drawn} drawn, ${live} live car-frames`);
+    assert.ok(nearZero < 200, `${nearZero} near-zero differences`);
   });
 }
 
@@ -170,28 +201,79 @@ for (const [city, name] of [[0, 'arcade'], [1, 'original']]) {
   });
 }
 
-test('the test camera (at the cab, looking +x) sees the cars ahead; the drawn list is a subset of the live cars', { skip: !have }, () => {
+// --- the camera ---
+
+const sub = (a, b) => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+const dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+const flat = (v) => Math.hypot(v[0], v[2]);
+
+test('the chase camera (camUpdate mode 0): the eye 60 behind and 15 above the standing cab, the target 17 ahead and 5 up; the view matrix is three.js\'s look-at', { skip: !have }, () => {
   const car = make(0);
-  let drawn = 0;
-  for (let i = 0; i < 60; i++) {
+  for (let i = 0; i < 300; i++) car.update(IDLE);   // the homing vectors settle
+  const cam = car.camera();
+  const pos = [car.pos.x, car.pos.y, car.pos.z], f = car.forward();
+  assert.equal(cam.mode, 0);
+  assert.equal(cam.fov, 60);
+  const eye = sub(cam.eye, pos), target = sub(cam.target, pos);
+  assert.ok(Math.abs(flat(eye) - 60) < 0.5 && Math.abs(eye[1] - 15) < 0.5, `eye offset ${eye}`);
+  assert.ok(Math.abs(flat(target) - 17) < 0.5 && Math.abs(target[1] - 5) < 0.5, `target offset ${target}`);
+  assert.ok(dot(eye, [f.x, 0, f.z]) < -59, 'behind the cab');
+  assert.ok(dot(target, [f.x, 0, f.z]) > 16, 'ahead of the cab');
+  // Column major: row 2 of the rotation is the camera's back direction, the translation -R * eye.
+  const back = sub(cam.eye, cam.target), n = Math.hypot(...back);
+  for (let i = 0; i < 3; i++) assert.ok(Math.abs(cam.view[2 + 4 * i] - back[i] / n) < 1e-3, `view row 2 ${i}`);
+  const t = [0, 1, 2].map((r) => -(cam.view[r] * cam.eye[0] + cam.view[4 + r] * cam.eye[1] + cam.view[8 + r] * cam.eye[2]));
+  for (let i = 0; i < 3; i++) assert.ok(Math.abs(cam.view[12 + i] - t[i]) < 0.05, `view translation ${i}: ${cam.view[12 + i]} vs ${t[i]}`);
+  assert.equal(cam.view[15], 1);
+});
+
+test('the chase camera follows the moving cab and the countdown plays the start camera (mode 7, the eye swinging round the cab, the view widening to 70 degrees)', { skip: !have }, () => {
+  const car = make(0);
+  const modes = new Set(), fovs = new Set();
+  let minDist = Infinity, maxDist = 0;
+  car.startIntro(); car.hold = true;
+  for (let i = 0; i < 365; i++) {
+    if (i === 305) car.hold = false;
     car.update(IDLE);
+    const cam = car.camera();
+    modes.add(cam.mode); fovs.add(cam.fov);
+    if (i > 0 && cam.mode === 7) { const d = flat(sub(cam.eye, [car.pos.x, car.pos.y, car.pos.z])); minDist = Math.min(minDist, d); maxDist = Math.max(maxDist, d); }
+  }
+  assert.ok(modes.has(7) && modes.has(0), [...modes].join());
+  assert.ok(fovs.has(70) && fovs.has(60), [...fovs].join());
+  assert.ok(minDist < 40 && maxDist > 25, `start camera distance ${minDist}..${maxDist}`);
+  car.intro = false;
+  assert.equal(car.speed, 0);
+  for (let i = 0; i < 240; i++) {
+    car.update(GAS);
+    const cam = car.camera();
+    const d = flat(sub(cam.eye, [car.pos.x, car.pos.y, car.pos.z]));
+    assert.ok(d > 40 && d < 130, `frame ${i}: the eye ${d} from the cab`);
+    assert.ok(dot(sub(cam.target, cam.eye), sub([car.pos.x, car.pos.y, car.pos.z], cam.eye)) > 0, 'looking at the cab');
+  }
+  assert.ok(car.kmh() > 100);
+});
+
+test('the drawn traffic is inside the game camera\'s cone within 1800 and (but for a car removed the same frame) a subset of the live cars', { skip: !have }, () => {
+  const car = make(0);
+  let drawn = 0, gone = 0;
+  for (let i = 0; i < 300; i++) {
+    car.update(i < 240 ? IDLE : GAS);
+    const cam = car.camera();
+    const fwd = sub(cam.target, cam.eye), n = Math.hypot(...fwd);
     const live = new Set(car.liveCars().map((c) => c.id));
     for (const c of car.cars) {
-      assert.ok(live.has(c.id));
+      if (!live.has(c.id)) gone++;   // drawn by entryCarPut, then removed by trafficControl the same frame
       assert.ok(c.detail === 0 || c.detail === 1);
       assert.ok(c.flags & ON_SCREEN);
-      assert.ok(c.x > car.pos.x, 'ahead of the camera');
+      const d = sub([c.x, c.y, c.z], cam.eye);
+      const along = dot(d, fwd) / n;
+      assert.ok(along > 0 && along < 1800 + 60, `car at ${along} along the view`);
       drawn++;
     }
   }
   assert.ok(drawn > 100, `${drawn} drawn car-frames`);
-  // A camera looking the other way (-x) sees only the cars behind.
-  car.setCamera([0, 0, 1, 0, 0, 1, 0, 0, -1, 0, 0, 0, car.pos.z, -car.pos.y, -car.pos.x, 1], 60);
-  car.update(IDLE);
-  for (const c of car.cars) assert.ok(c.x < car.pos.x, 'behind the cab');
-  car.setCamera(null);
-  car.update(IDLE);
-  assert.ok(car.cars.length > 0);
+  assert.ok(gone < drawn / 20, `${gone} of ${drawn} drawn cars removed the same frame`);
 });
 
 test('a traffic car that stands still long enough on a taken road, parked cars and the rail vehicles exist', { skip: !have }, () => {

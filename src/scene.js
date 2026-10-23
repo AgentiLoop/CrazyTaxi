@@ -70,32 +70,39 @@ export function makeUnlit(root, cache = new Map()) {
   return root;
 }
 
-/** The game's chase camera (placeholder values): behind and above the cab, looking a little ahead. */
-export class ChaseCamera {
+/**
+ * The game's camera on a three.js camera. The Dreamcast draws a 4:3 picture whose field of
+ * view (camUpdate's perspective, 60 degrees in the chase camera) spans the width; the view
+ * matrix camUpdate stores is three.js's matrixWorldInverse (column major, looking down -z).
+ */
+export const ASPECT = 4 / 3;
+
+export class GameCamera {
   constructor(camera) {
     this.camera = camera;
-    this.eye = new THREE.Vector3();
-    this.target = new THREE.Vector3();
-    this.mode = 0;
-    this._first = true;
-    this._tmp = new THREE.Vector3();
+    this.camera.aspect = ASPECT;
+    this._inverse = new THREE.Matrix4();
+    this._fov = 0;
   }
 
-  update(car, dt) {
-    const f = car.forward();
-    const back = this.mode === 0 ? 95 : 55;
-    const up = this.mode === 0 ? 38 : 22;
-    const wantEye = this._tmp.set(car.pos.x - f.x * back, car.pos.y + up, car.pos.z - f.z * back);
-    if (this._first) { this.eye.copy(wantEye); this._first = false; }
-    else this.eye.lerp(wantEye, Math.min(1, 8 * dt));
-    this.target.set(car.pos.x + f.x * 25, car.pos.y + 12, car.pos.z + f.z * 25);
-    this.camera.position.copy(this.eye);
-    this.camera.lookAt(this.target);
+  /** @param {{view: Float32Array, fov: number}} cam DreamcastCar.camera() */
+  apply(cam) {
+    const v = cam.view;
+    // The first frame of the start camera has eye == target: no matrix yet - keep the last one.
+    if (v[15] !== 1 || (v[0] === 0 && v[1] === 0 && v[2] === 0)) return;
+    this._inverse.fromArray(v).invert();
+    this._inverse.decompose(this.camera.position, this.camera.quaternion, this.camera.scale);
+    if (cam.fov !== this._fov) {
+      this._fov = cam.fov;
+      // The horizontal angle across 4:3 -> three.js's vertical one.
+      this.camera.fov = Math.atan(Math.tan(cam.fov * Math.PI / 360) / ASPECT) * 360 / Math.PI;
+      this.camera.updateProjectionMatrix();
+    }
   }
+}
 
-  /** The horizontal field of view in degrees (the game's clipping angle). */
-  horizontalFov() {
-    const v = this.camera.fov * Math.PI / 360;
-    return Math.atan(Math.tan(v) * this.camera.aspect) * 360 / Math.PI;
-  }
+/** The largest 4:3 picture inside w x h: { x, y, width, height } (black bars around it). */
+export function letterbox(w, h) {
+  const width = Math.min(w, Math.floor(h * ASPECT)), height = Math.min(h, Math.floor(w / ASPECT));
+  return { x: Math.floor((w - width) / 2), y: Math.floor((h - height) / 2), width, height };
 }

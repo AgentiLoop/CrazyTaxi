@@ -8,7 +8,7 @@
   <title>Crazy Taxi</title>
   <style>
     html, body { margin: 0; height: 100%; background: #111820; overflow: hidden; font: 14px/1.4 system-ui, sans-serif; color: #fff; }
-    canvas { display: block; width: 100%; height: 100%; }
+    canvas { position: fixed; display: block; }
     #status { position: fixed; inset: 0; display: grid; place-items: center; font-size: 20px; text-shadow: 0 1px 2px #000; }
     #help { position: fixed; right: 12px; bottom: 12px; padding: 6px 10px; background: rgba(0,0,0,.45); border-radius: 6px; }
   </style>
@@ -17,7 +17,7 @@
   <canvas id="view"></canvas>
   <div id="status">Loading...</div>
   <div id="hud" hidden></div>
-  <div id="help">↑ gas · ↓ brake · ←→ steer · X drive · Z reverse · C camera · R restart · ?city=original<br>stop inside a customer's circle to pick them up; stop at the landmark to drop them off</div>
+  <div id="help">↑ gas · ↓ brake · ←→ steer · X drive · Z reverse · R restart · ?city=original<br>stop inside a customer's circle to pick them up; stop at the landmark to drop them off</div>
   <script type="module" src="/src/main.js"></script>
 </body>
 </html>

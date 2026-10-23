@@ -1,15 +1,15 @@
-// Crazy Taxi in three.js: the Arcade city, its set objects, the cab and the
-// traffic driven by the game's own code (exec_CarMain, trafficControl and the
-// traffic events running in an SH-4 interpreter, src/dc-car.js) over the game's
-// collision, and the fare loop (customers, time, cash).
+// Crazy Taxi in three.js: the Arcade city, its set objects, the cab, the traffic
+// and the camera driven by the game's own code (exec_CarMain, trafficControl, the
+// traffic events and camUpdate running in an SH-4 interpreter, src/dc-car.js) over
+// the game's collision, and the fare loop (customers, time, cash).
 // Assets come from local-assets/ (written by tools/extract_all.py; never bundled).
 import * as THREE from 'three';
 import { Collision, KIND_NAMES } from './collision.js';
 import { DreamcastCar, STEP, WHEEL_RADIUS, carFiles } from './dc-car.js';
 import { Input } from './input.js';
 import { CITIES } from './start.js';
-import { loadGltf, makeUnlit, ChaseCamera } from './scene.js';
-import { GameSystem } from './game.js';
+import { loadGltf, makeUnlit, GameCamera, letterbox } from './scene.js';
+import { GameSystem, STATE_COUNTDOWN } from './game.js';
 import { Customers } from './customers.js';
 import { CustomerView } from './customer-view.js';
 import { Hud, HUD_CSS } from './hud.js';
@@ -25,23 +25,29 @@ const status = document.getElementById('status');
 const hudRoot = document.getElementById('hud');
 const say = (t) => { status.textContent = t; };
 
-const renderer = new THREE.WebGLRenderer({ antialias: true, canvas: document.getElementById('view') });
+const canvas = document.getElementById('view');
+const renderer = new THREE.WebGLRenderer({ antialias: true, canvas });
 renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
-renderer.setSize(innerWidth, innerHeight);
 
 const scene = new THREE.Scene();
 const SKY = 0x7fb2e5;
 scene.background = new THREE.Color(SKY);
 scene.fog = new THREE.Fog(SKY, 5000, 13000);
 
-const camera = new THREE.PerspectiveCamera(55, innerWidth / innerHeight, 2, 20000);
-const chase = new ChaseCamera(camera);
+// The Dreamcast's 4:3 picture (nlPerspective: near 3, far 15000), letterboxed in the window.
+const camera = new THREE.PerspectiveCamera(45, 4 / 3, 3, 15000);
+const gameCamera = new GameCamera(camera);
 
-addEventListener('resize', () => {
-  camera.aspect = innerWidth / innerHeight;
-  camera.updateProjectionMatrix();
-  renderer.setSize(innerWidth, innerHeight);
-});
+function resize() {
+  const box = letterbox(innerWidth, innerHeight);
+  renderer.setSize(box.width, box.height);
+  for (const el of [canvas, hudRoot]) {
+    el.style.left = `${box.x}px`; el.style.top = `${box.y}px`;
+    el.style.width = `${box.width}px`; el.style.height = `${box.height}px`;
+  }
+}
+addEventListener('resize', resize);
+resize();
 
 async function fetchJson(path) {
   const r = await fetch(ASSETS + path);
@@ -120,6 +126,7 @@ async function main() {
 
   function restart() {
     car.init();           // init_CarMain: the game's own start spot
+    car.startIntro();     // the countdown's start camera
     gs.reset();
     customers = new Customers(customerSet, stopSet, line, cityName);
     view.clear();
@@ -142,13 +149,12 @@ async function main() {
     acc += dt;
     const state = input.poll();
     if (state.resetPressed) restart();
-    if (state.cameraPressed) chase.mode = (chase.mode + 1) % 2;
     let steps = 0;
     events.length = 0;
-    // entryCarPut culls the traffic with the camera (the last frame's view).
-    car.setCamera(camera.matrixWorldInverse.elements, chase.horizontalFov());
     while (acc >= STEP && steps < 6) {
       gs.tick();
+      // The game tick plays the start camera while the countdown is positive.
+      car.intro = gs.state === STATE_COUNTDOWN && gs.countdown > 0;
       car.hold = !gs.controlOn || customers.holding;
       const before = { x: car.pos.x, z: car.pos.z };
       car.update(state);
@@ -174,7 +180,7 @@ async function main() {
     customers.events.push(...events);
     traffic.update(car.cars);
     view.update(customers, car, dt);
-    chase.update(car, dt);
+    gameCamera.apply(car.camera());   // camUpdate's view: the traffic was culled with it
     renderer.render(scene, camera);
 
     frames++;
@@ -182,13 +188,13 @@ async function main() {
     hud.update(gs, customers, car, events,
       `${Math.round(car.kmh())} km/h  ${car.gear === 0 ? 'R' : 'D' + car.gear}  ${Math.round(car.rpm)} rpm  ${KIND_NAMES[car.groundKind] || '-'}  ` +
       `(${car.pos.x.toFixed(0)}, ${car.pos.y.toFixed(0)}, ${car.pos.z.toFixed(0)})  line ${customers.carLine}  lv ${gs.level}  ` +
-      `traffic ${car.carCount} (${traffic.drawn} drawn, level ${car.trafficLevel})  ${fps} fps`);
+      `traffic ${car.carCount} (${traffic.drawn} drawn, level ${car.trafficLevel})  cam ${car.camera().mode}  ${fps} fps`);
   }
   requestAnimationFrame(frame);
 
   // For tests and probes.
   window.__game = {
-    car, collision, scene, camera, chase, renderer, cityName, wheelRadius: WHEEL_RADIUS,
+    car, collision, scene, camera, gameCamera, renderer, cityName, wheelRadius: WHEEL_RADIUS,
     gs, get customers() { return customers; }, view, traffic, restart,
   };
 }

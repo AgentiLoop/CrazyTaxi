@@ -1,19 +1,30 @@
-// The player's cab and the traffic run by the game's own code: init_CarMain,
-// exec_CarMain, entryCarPut, trafficControl, nlExecuteEvent (every traffic car,
-// train and signal is an event) and ExecColliObj from the USA executable
-// (1ST_READ.BIN, code at 0x0C010000) execute in the SH-4 interpreter (src/sh4.js)
-// over the city's course points (SPLDCn.BIN at 0x0C328000) and collision
-// (COLDCn.BIN at 0x0CB40000), exactly as on the Dreamcast. Everything the
-// routines would draw, play or rumble is stubbed (hooks); the physics -
-// carGearbox, carWheelForces, carAngularMotion, carWheelCollision,
-// carGroundCheck, and for the traffic pcarDrive, carSteering, carResistance,
-// carBalance, carMultiCollision, the course occupancy grid and the collision
-// objects - is the original.
+// The player's cab, the traffic and the camera run by the game's own code:
+// init_CarMain, exec_CarMain, entryCarPut, trafficControl, nlExecuteEvent (every
+// traffic car, train and signal is an event), ExecColliObj, initCamera, camUpdate
+// and the start camera from the USA executable (1ST_READ.BIN, code at 0x0C010000)
+// execute in the SH-4 interpreter (src/sh4.js) over the city's course points
+// (SPLDCn.BIN at 0x0C328000) and collision (COLDCn.BIN at 0x0CB40000), exactly as
+// on the Dreamcast. Everything the routines would draw, play or rumble is stubbed
+// (hooks); the physics - carGearbox, carWheelForces, carAngularMotion,
+// carWheelCollision, carGroundCheck, and for the traffic pcarDrive, carSteering,
+// carResistance, carBalance, carMultiCollision, the course occupancy grid and the
+// collision objects - is the original.
 //
-// Set-up (gameState0's order): nlInitHeapMemory, nlInitEvent, extRandomSeed(12345),
-// InitColliObj, InitCollision, InitColliWall, init_CarMain, entryCarPut(0),
-// trafficControl(0). A frame (gameStateDrive's order): exec_CarMain,
-// entryCarPut(1), trafficControl(1), nlExecuteEvent, ExecColliObj.
+// Set-up (gameState0's order): the nl matrix stacks, nlInitHeapMemory, nlInitEvent,
+// extRandomSeed(12345), InitColliObj, InitCollision, InitColliWall, init_CarMain,
+// initCamera, SetStartCamera, entryCarPut(0), trafficControl(0). A frame
+// (gameStateDrive's order): camUpdate, [ExecStartCamera while the countdown runs],
+// exec_CarMain, entryCarPut(1), trafficControl(1), nlExecuteEvent, ExecColliObj.
+//
+// The camera (USA 0x0C1775C0; the decomp's EU 0x0C179840): +0x00 eye, +0x0C target,
+// +0x18 three angles, +0x24 the camera matrix; the mode at 0x0C1775E0 (0 the chase
+// camera: target = car + (0, 5, 17) in the car's axes, eye = car + (0, 15 + s/3,
+// -60 - s + speed * k) with a smoothed speed term s, both eased by homing vectors,
+// the eye pulled in front of walls by GetCollision; 7 the start camera, which
+// SetStartCamera/ExecStartCamera play during the countdown). camUpdate rebuilds
+// the perspective (60 degrees across a 4:3 screen, 70 in parts of the start
+// camera) and stores the view matrix at 0x0C2B0830, which entryCarPut's clipping
+// (CheckClippingProject3D, the angle's 1/sin and 1/tan at 0x0C13DBC8/CC) uses.
 //
 // Car_Data (USA 0x0C176E4C; the decomp's EU 0x0C1790CC) as the code uses it:
 //   +0x00  the cab's collision object (SetColliObj in init_CarMain; ExecColliObj hits it):
@@ -66,29 +77,35 @@ const G = {
   mainMode: 0x0C1EBF54,               // 1 = the game (not the attract demo)
   goiToolFlags: 0x0C2A2B28,           // GoiTool(0) sets 2: traffic on (getGoiToolFlag(2))
   endingFlag: 0x0C2A2B10, subwayFlag: 0x0C2A4C98,
-  fov: 0x0C177624,                    // the camera's field of view (60): entryCarPut's detail choice
+  fov: 0x0C177624,                    // the camera's field of view (60; 70 in the start camera): the perspective, the clipping, entryCarPut's detail choice
   clipSin: 0x0C13DBC8, clipTan: 0x0C13DBCC,   // SetNewClippingAngle: 1 / sin, 1 / tan of the half angle
-  viewMatrix: 0x0C2B0830,             // nlProjectScreen3D's matrix (column major)
+  viewMatrix: 0x0C2B0830,             // the view matrix camUpdate stores (column major; nlProjectScreen3D reads it)
+  camera: 0x0C1775C0, camMode: 0x0C1775E0,    // eye, target, angles; the mode (VR_mode)
   heapPtr: 0x0C177764,
   courseTable: 0x0C2A4350, courseCount: 0x0C2A4354,
   lineTable: 0x0C29F7E8, lineCount: 0x0C29F7EC,
   courseDirectory: 0x0C0C718C,        // {table, count} per city
   courseLineTbl: 0x0C0C2B64,          // course index words by Game_No + MiniGame_No
-  matrixStack: 0x0C2B067C,            // u16 depth, u16 max, base, current
   stick: 0x0C1EC014, accel: 0x0C1EC018, brake: 0x0C1EC01C,
   buttonB: 0x0C1EBF87, buttonA: 0x0C1EBF88,
   carEntryNum: 0x0C2A2168, carListCount: 0x0C2A2188, carList: 0x0C2A218C,   // up to 100 cars
   carControlArea: 0x0C29F7D8, trafficLevel: 0x0C29F82C,
 };
-const MATRIX_STACK = 0x0CFD0000;
+// The nl library's matrix stack: 16 (+1) matrices at 0x0C1BF7B8, as the game's start-up
+// passes them to the init routine, which fills the slot descriptors at 0x0C2B067C
+// (12 bytes each: u16 depth, u16 max, base, current; slot 0 = the current one, its
+// index at 0x0C2B0678; 1 the model-view stack, 2 the camera, 3 the projection).
+const MATRIX_STACK = 0x0C1BF7B8, MATRIX_STACK_SIZE = 16;
 const HEAP = 0x0C177768, HEAP_SIZE = 0x30000;   // nlMalloc's block (events, grids)
-const CLIP_60 = [0x40000742, 0x3FDDC49A];       // SetNewClippingAngle(60)
 const IDENTITY = [0x3F800000, 0, 0, 0, 0, 0x3F800000, 0, 0, 0, 0, 0x3F800000, 0, 0, 0, 0, 0x3F800000];
 
 const FN = {
+  initMatrixStack: 0x0C0765E0,
   initHeap: 0x0C02937C, initEvent: 0x0C0294F6, seed: 0x0C048AA0, initColliObj: 0x0C031D3C,
   initCollision: 0x0C030CC4, initColliWall: 0x0C033374,
   initCarMain: 0x0C023696, execCarMain: 0x0C023CF2,
+  initCamera: 0x0C026768, camUpdate: 0x0C02693C, camSnapToCar: 0x0C0288C2,
+  setStartCamera: 0x0C028FC6, execStartCamera: 0x0C029120,
   entryCarPut: 0x0C043BA2, trafficControl: 0x0C041ACC, executeEvent: 0x0C0296B6, execColliObj: 0x0C031EE4,
   putCarModel: 0x0C0434D0, putTrainModel: 0x0C0437FE,
   setTechnicalBonus: 0x0C042364,
@@ -179,14 +196,11 @@ export class DreamcastCar {
     cpu.w32(G.goiToolFlags, 2);
     cpu.w32(G.endingFlag, 0);
     cpu.w32(G.subwayFlag, 0);
-    cpu.wf(G.fov, 60);
     // CourseTableSet(city) and init_GameSystem's course line.
     const table = cpu.r32(G.courseDirectory + this.city * 8), count = cpu.r32(G.courseDirectory + this.city * 8 + 4);
     cpu.w32(G.courseTable, table); cpu.w32(G.courseCount, count);
     const rec = table + cpu.r16(G.courseLineTbl + this.city * 2) * 12;
     cpu.w32(G.lineTable, cpu.r32(rec)); cpu.w32(G.lineCount, cpu.r32(cpu.r32(rec + 4)));
-    cpu.w16(G.matrixStack, 0); cpu.w16(G.matrixStack + 2, 64);
-    cpu.w32(G.matrixStack + 4, MATRIX_STACK); cpu.w32(G.matrixStack + 8, MATRIX_STACK);
 
     this.pos = { x: 0, y: 0, z: 0 };
     this.vel = { x: 0, y: 0, z: 0 };
@@ -201,20 +215,20 @@ export class DreamcastCar {
     this.onGround = true;
     this.yawRate = 0;          // heading change per frame, rad
     this.hold = false;
+    this.intro = false;        // the countdown (startIntro): ExecStartCamera plays the start camera each frame
     this.recoveries = 0;
     this.stickX = 0;
     this.frames = 0;
     /** @type {TrafficCar[]} the traffic cars entryCarPut drew this frame */
     this.cars = [];
     this.tricks = [];
-    this.view = null;          // the camera (setCamera); null = a test camera at the cab looking along +x
     this.init();
   }
 
-  /** The game's set-up (gameState0): heap, events, RNG, collision objects, init_CarMain, the traffic. */
+  /** The game's set-up (gameState0): matrix stacks, heap, events, RNG, collision objects, init_CarMain, the camera, the traffic. */
   init() {
     const cpu = this.cpu;
-    cpu.w16(G.matrixStack, 0); cpu.w32(G.matrixStack + 8, MATRIX_STACK);
+    this.call(FN.initMatrixStack, { r4: MATRIX_STACK, r5: MATRIX_STACK_SIZE });
     cpu.w32(G.heapPtr, HEAP);
     this.call(FN.initHeap, { r4: HEAP, r5: HEAP_SIZE });
     this.call(FN.initEvent);
@@ -223,6 +237,8 @@ export class DreamcastCar {
     this.call(FN.initCollision);
     this.call(FN.initColliWall);
     this.call(FN.initCarMain);
+    this.call(FN.initCamera, { r4: 0 });
+    this.intro = false;
     cpu.w32(CAR + 0x54, 1);
     this.call(FN.entryCarPut, { r4: 0 });
     this.call(FN.trafficControl, { r4: 0 });
@@ -236,6 +252,16 @@ export class DreamcastCar {
   call(fn, regs) {
     for (let i = 0; i < 16; i++) this.cpu.xfSet(i, IDENTITY[i]);
     return this.cpu.call(fn, regs);
+  }
+
+  /**
+   * The countdown begins (gameState0's SetStartCamera): the start camera plays from the next
+   * frame on, until `intro` is cleared - the game tick stops it when the countdown reaches 0,
+   * 60 frames after the cab is released; it switches to the chase camera by itself before that.
+   */
+  startIntro() {
+    this.call(FN.setStartCamera);
+    this.intro = true;
   }
 
   /** Start over with the car at a spot ({x, y, z, heading} in radians). */
@@ -260,6 +286,7 @@ export class DreamcastCar {
     }
     for (let i = 0; i < 3; i++) { cpu.wf(CAR + 0xFC + 4 * i, 0); cpu.wf(CAR + 0x108 + 4 * i, 0); }
     cpu.wf(CAR + 0x15C, 0); cpu.wf(CAR + 0x160, 0);
+    this.call(FN.camSnapToCar, { r4: 0 });   // the camera's homing vectors start over on the car
     this.readBack();
   }
 
@@ -268,39 +295,32 @@ export class DreamcastCar {
   }
 
   /**
-   * The camera entryCarPut culls the traffic with: a column-major view matrix (three.js
-   * camera.matrixWorldInverse.elements) and the horizontal field of view in degrees
-   * (SetNewClippingAngle). null: the test camera.
+   * The game's camera this frame (camUpdate): eye, target (world), the horizontal field of
+   * view in degrees across the 4:3 screen, the mode (0 chase, 7 the start camera) and the
+   * view matrix (16 floats, column major - three.js camera.matrixWorldInverse's layout).
    */
-  setCamera(elements, fovDeg) {
-    this.view = elements ? { m: Float32Array.from(elements), fov: fovDeg } : null;
+  camera() {
+    const cpu = this.cpu, c = G.camera;
+    const view = new Float32Array(16);
+    for (let i = 0; i < 16; i++) view[i] = cpu.rf(G.viewMatrix + 4 * i);
+    return {
+      eye: [cpu.rf(c), cpu.rf(c + 4), cpu.rf(c + 8)],
+      target: [cpu.rf(c + 12), cpu.rf(c + 16), cpu.rf(c + 20)],
+      angles: [cpu.rs16(c + 24), cpu.rs16(c + 26), cpu.rs16(c + 28)],
+      fov: cpu.rf(G.fov), mode: cpu.r32(G.camMode), view,
+    };
   }
 
-  /** The view matrix as the game stores it (column major, as three.js does). */
-  writeView() {
-    const cpu = this.cpu;
-    if (!this.view) {
-      // At the cab, looking along +x: out = (z - cz, y - cy, cx - x). The same camera as tools/car_trace.py.
-      const m = new Uint32Array(16);
-      m[2] = 0xBF800000;
-      m[5] = m[8] = m[15] = 0x3F800000;
-      m[12] = cpu.r32(CAR + 0x80) ^ 0x80000000;
-      m[13] = cpu.r32(CAR + 0x7C) ^ 0x80000000;
-      m[14] = cpu.r32(CAR + 0x78);
-      for (let i = 0; i < 16; i++) cpu.w32(G.viewMatrix + 4 * i, m[i]);
-      cpu.w32(G.clipSin, CLIP_60[0]); cpu.w32(G.clipTan, CLIP_60[1]);
-      return;
-    }
-    const e = this.view.m;
-    for (let i = 0; i < 16; i++) cpu.wf(G.viewMatrix + 4 * i, e[i]);
-    const a = (((this.view.fov * 32768 / 360 + 0.5) | 0) & 0xFFFF) - 1;   // SetNewClippingAngle
-    cpu.wf(G.clipSin, 1 / Math.sin(a * TURN)); cpu.wf(G.clipTan, 1 / Math.tan(a * TURN));
-  }
-
-  /** One 60 Hz frame: exec_CarMain, then the traffic. input: { steer, accel, brake, drive, reverse }. */
+  /**
+   * One 60 Hz frame: camUpdate (the start camera too while `intro`), exec_CarMain, then the
+   * traffic. input: { steer, accel, brake, drive, reverse }.
+   */
   update(input) {
     const cpu = this.cpu;
     if (this.hold) input = HOLD_INPUT;
+    // The camera first (gameStateDrive's order): it follows the last frame's car.
+    this.call(FN.camUpdate, { r4: 0 });
+    if (this.intro) this.call(FN.execStartCamera);
     // Keyboard shaping: the stick slides toward the key; the game's own curve
     // (exec_CarMain: dead zone 0.04, quadratic to 0.1, then linear: 4320 =
     // 23.7 degrees at full stick, the 0x1100 clamp never reached) does the rest.
@@ -323,9 +343,8 @@ export class DreamcastCar {
     this.readBack();
     this.wheelSpin += cpu.rf(CAR + 0x160) * 2 * Math.PI / 3600;   // wheel rpm -> rad per frame
     // The traffic: entryCarPut(1) rebuilds the course occupancy grid and draws
-    // (here: lists) the cars on screen, trafficControl spawns and removes,
-    // nlExecuteEvent drives every car, ExecColliObj resolves the collisions.
-    this.writeView();
+    // (here: lists) the cars inside the camera's cone, trafficControl spawns and
+    // removes, nlExecuteEvent drives every car, ExecColliObj resolves the collisions.
     this.cars = [];
     this.tricks = [];
     this.call(FN.entryCarPut, { r4: 1 });

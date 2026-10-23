@@ -14,7 +14,7 @@ npm test           # node --test tests/*.test.mjs (skips data tests without loca
 ```
 
 Keys: arrows / WASD drive and steer, X = Drive gear (B), Z = Reverse gear (A),
-C camera, R restart. Stop inside a customer's circle to pick them up, stop at
+R restart. Stop inside a customer's circle to pick them up, stop at
 the landmark (the arrow and picture show where) to drop them off.
 
 ## What is in the game so far
@@ -25,7 +25,7 @@ the landmark (the arrow and picture show where) to drop them off.
   land on `#road` within 2 units.
 * `src/start.js` - the start spots and headings `init_CarMain` uses (Arcade:
   course 0's last point moved 135 along z, heading 0x5000; Original fixed values).
-* `src/dc-car.js` + `src/sh4.js` - the cab and the traffic are driven by the
+* `src/dc-car.js` + `src/sh4.js` - the cab, the traffic and the camera are driven by the
   game's own code: `init_CarMain` / `exec_CarMain` (carGearbox, carWheelForces,
   carAngularMotion, carWheelCollision, carGroundCheck...), `entryCarPut`,
   `trafficControl` (where cars appear and vanish: a circle of 1100 units around a
@@ -33,10 +33,16 @@ the landmark (the arrow and picture show where) to drop them off.
   `nlExecuteEvent` (every traffic car, train, cable car and signal is an event:
   pcarDrive, carSteering, carResistance, carBalance, the course occupancy grid)
   and `ExecColliObj` (the collision boxes: the cab hits the traffic and the
-  traffic hits back) from `1ST_READ.BIN` run in a small SH-4 interpreter over the
+  traffic hits back), `initCamera` / `camUpdate` (the chase camera: the eye eased
+  by homing vectors to 60 behind and 15 above the cab plus a smoothed speed term,
+  the target 17 ahead and 5 up, the eye pulled in front of walls by
+  `GetCollision`, the view matrix and the 60 degree perspective) and
+  `SetStartCamera` / `ExecStartCamera` (the countdown's swoop around the cab,
+  widening to 70 degrees) from `1ST_READ.BIN` run in a small SH-4 interpreter over the
   disc's course points (`SPLDCn.BIN`) and collision (`COLDCn.BIN`) at their
   Dreamcast addresses, with the drawing, sound, rumble and effects calls
-  stubbed. Every frame - the cab and every traffic car - matches the decomp's
+  stubbed. Every frame of a run - the 366 frame countdown with the start camera,
+  then driving: the cab, the camera and every traffic car - matches the decomp's
   SH-4 simulator bit for bit (`tests/fixtures/car-trace-*.json`, recorded by
   `tools/car_trace.py`; the simulator's 64-bit `fmov` pairs are corrected there:
   the SH-4 keeps `FR[2k]` at the lower address, which is how `nlPushMatrix`'s two
@@ -50,7 +56,7 @@ the landmark (the arrow and picture show where) to drop them off.
 * `src/traffic-view.js` - the traffic drawn as `putCarModel` draws it: the
   extracted vehicle models (`local-assets/vehicles/traffic`, near/far detail by
   the game's 400 unit rule, the camera's clipping cone and 1800 unit draw
-  distance applied by `entryCarPut` itself from the three.js camera), the body
+  distance applied by `entryCarPut` itself from the game's own view matrix), the body
   tinted with the car's colour (KHR_materials_variants paints), lifted and tilted
   by its suspension, wheels spun by 0.2 x the speed, brake lamps.
 * `src/game.js` - the run's numbers, ported from the USA executable's GSystem
@@ -73,12 +79,14 @@ the landmark (the arrow and picture show where) to drop them off.
   countdown and TIME UP.
 * `src/main.js`, `src/scene.js` - the city (`BINCn.glb`), its set objects
   (`OBJDCn.glb`) and `cab_0.glb` drawn unlit (texture x vertex colour, as the
-  Dreamcast does), a chase camera.
+  Dreamcast does) through the game's camera: its view matrix on the three.js
+  camera, its horizontal field of view across a 4:3 picture letterboxed in the
+  window (near 3, far 15000, the decomp's reading of the projection).
 * `tools/browser-check.mjs` - headless Chrome smoke run (drives, then runs one
   fare by teleporting to a customer and their stop; screenshots).
 
-Not yet: pedestrians, the passenger in the cab and the get-in/get-out cut, the
-game's camera, the trick bonuses' display (Crazy Through etc. are counted:
+Not yet: pedestrians, the passenger in the cab and the get-in/get-out camera
+cuts (camera modes 10/11), the trick bonuses' display (Crazy Through etc. are counted:
 `car.tricks`), traffic horns and turn signals, HUD sprites, sound, Crazy Box.
 
 Asset extraction is documented in [docs/asset-extraction.md](docs/asset-extraction.md).

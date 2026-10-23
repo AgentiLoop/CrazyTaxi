@@ -32,6 +32,11 @@ const snap = () => page.evaluate(() => {
     waiting: cs.records.filter((r) => r.state === 1).length, live: g.view.live.size, rider: cs.rider ? cs.rider.index : null,
     traffic: { cars: c.carCount, drawn: g.traffic.drawn, instances: g.traffic.instances.size, level: c.trafficLevel,
       types: [...new Set(c.cars.map((t) => t.type))].sort((a, b) => a - b) },
+    camera: (() => {
+      const k = c.camera();
+      return { mode: k.mode, fov: k.fov, eye: k.eye.map(Math.round), target: k.target.map(Math.round), threeFov: Math.round(g.camera.fov),
+        aspect: g.camera.aspect, size: [g.renderer.domElement.clientWidth, g.renderer.domElement.clientHeight] };
+    })(),
     hud: { clock: document.getElementById('hud-clock').textContent, cash: document.getElementById('hud-cash').textContent,
       big: document.getElementById('hud-big').hidden ? null : document.getElementById('hud-big').textContent,
       dest: document.getElementById('hud-dest').hidden ? null : document.getElementById('hud-dest-name').textContent,
