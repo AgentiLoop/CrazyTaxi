@@ -425,6 +425,41 @@ outside reference. Checks done on them instead:
 
 Palette RAM in-game could still differ if a code path not found here rewrites it.
 
+## Bitmap fonts (PNG + metrics)
+
+```sh
+python3 tools/extract_fonts.py local-assets/disc --output local-assets/fonts
+```
+
+Yes, Python is the right tool here: the fonts aren't standalone files on the disc. They are
+sprite textures in `SPRCOMM.BIN` whose glyph layout only exists in `1ST_READ.BIN`. The tool (stdlib
+only, reusing the sprite decoder) finds the `pfSetFont` descriptor by its structure: four texture
+numbers, four TSP size words, four pointers to 96-entry metric tables (codes 32–127: float x, float
+width, row index, 0), four U scales (1/width) and four heights (decomp `src/gen_ae.c`). It also finds the
+22-float V table that `pfPutc` indexes by row (`src/gen_ic.c`: eight 1/8 rows, two half rows, a
+quarter row). x = −1 means advance-only. The advance is width − 1 before runtime scaling (`pfLength`,
+`src/small_a.c`). `pfPutc` puts the larger V at the top vertex, so glyph PNGs are written with their
+source rows reversed (upright). The atlases keep the texture's own orientation.
+
+Output: `font_N/atlas.png`, `font_N/<code>.png` per drawable glyph, `manifest.json` (descriptor
+and V-table addresses, source texture, per-glyph x/width/row/advance/UV and hashes) and `index.html`
+(all glyphs plus a sample line per font). These are bitmap fonts; no TTF/OTF is produced. Tint,
+scale, aspect ratio and filtering applied at draw time are not baked in.
+
+Verified October 23, 2026 on the USA files (descriptor `0x0C0EC048`, V table `0x0C08CBEC`):
+**4 fonts, 331 glyph PNGs**, all from SPRCOMM:
+
+| Font | Texture | Atlas | Glyph height | Drawable glyphs |
+|------|---------|-------|--------------|-----------------|
+| 0 | SPRCOMM 3 | 128×128 | 16 | 84 |
+| 1 | SPRCOMM 0 | 256×256 | 32 | 77 (code 127 is a 192-wide quarter-height special slot) |
+| 2 | SPRCOMM 113 | 1024×64 | 32 | 84 |
+| 3 | SPRCOMM 118 | 128×128 | 16 | 86 |
+
+Glyphs printed as text read as upright letters (font 0 `A`, font 3 `7`, font 2 `C`). Two runs
+give identical output. Which screens use which font number (the `pfSetFont(n)` call sites) wasn't
+mapped.
+
 ## Characters and motions (glTF 2.0)
 
 After the texture step:
