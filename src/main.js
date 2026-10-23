@@ -1,9 +1,10 @@
-// Crazy Taxi in three.js: the Arcade city, its set objects, a drivable cab over
-// the game's own collision grid, and the fare loop (customers, time, cash).
+// Crazy Taxi in three.js: the Arcade city, its set objects, the cab driven by the
+// game's own physics (exec_CarMain running in an SH-4 interpreter, src/dc-car.js)
+// over the game's collision, and the fare loop (customers, time, cash).
 // Assets come from local-assets/ (written by tools/extract_all.py; never bundled).
 import * as THREE from 'three';
 import { Collision, KIND_NAMES } from './collision.js';
-import { Car, STEP, WHEEL_RADIUS } from './car.js';
+import { DreamcastCar, STEP, WHEEL_RADIUS, carFiles } from './dc-car.js';
 import { Input } from './input.js';
 import { CITIES } from './start.js';
 import { loadGltf, makeUnlit, ChaseCamera } from './scene.js';
@@ -46,25 +47,30 @@ async function fetchJson(path) {
   return r.json();
 }
 
+async function fetchBytes(path) {
+  const r = await fetch(ASSETS + path);
+  if (!r.ok) throw new Error(`${path}: HTTP ${r.status}`);
+  return new Uint8Array(await r.arrayBuffer());
+}
+
 function progress(label) {
   return (e) => { if (e.total) say(`${label} ${Math.round(e.loaded / e.total * 100)}%`); };
 }
 
 async function main() {
   say('Loading collision...');
-  const [colJson, courses, customerManifest] = await Promise.all([
+  const files = carFiles(GAME_NO);
+  const [colJson, courses, customerManifest, exe, courseBytes, collisionBytes] = await Promise.all([
     fetchJson(city.collision),
     fetchJson(city.collision.replace('collision/', 'courses/')),
     fetchJson('customers/manifest.json'),
+    fetchBytes(files.exe), fetchBytes(files.courses), fetchBytes(files.collision),
   ]);
   const collision = new Collision(colJson);
   const F = courses.course_fields;
-  const stagePoints = [];
   let line = null;
   for (const c of courses.courses) {
-    const role = c[F.indexOf('role')];
-    if (role === 'stage') stagePoints.push(...c[F.indexOf('points')]);
-    if (role === 'line') line = c[F.indexOf('points')];
+    if (c[F.indexOf('role')] === 'line') line = c[F.indexOf('points')];
   }
   const customerSet = customerManifest.customer_sets.find((s) => s.name === cityName);
   const stopSet = customerManifest.stop_sets.find((s) => s.game_no === GAME_NO && s.mini_game_no === 0);
@@ -82,20 +88,23 @@ async function main() {
   const wheelMeshes = [];
   cabModel.traverse((o) => { if (o.name.startsWith('wheel_')) wheelMeshes.push(o); });
   const wheels = wheelMeshes.map((o) => {
-    // Spin about the axle inside a yaw pivot so the front wheels can steer.
+    // Spin about the axle inside a yaw pivot so the wheels can steer (the game
+    // steers all four: carSteerWheels). Record order: front right, front left,
+    // rear right, rear left (the model table init_CarMain reads).
     const pivot = new THREE.Group();
     pivot.position.copy(o.position);
     o.position.set(0, 0, 0);
     o.parent.add(pivot);
     pivot.add(o);
-    return { pivot, mesh: o, front: pivot.position.z > 0 };
+    const index = (pivot.position.z > 0 ? 0 : 2) + (pivot.position.x > 0 ? 0 : 1);
+    return { pivot, mesh: o, index };
   });
   // The cab's +z is its front: rotate it by the heading directly.
   const cab = new THREE.Group();
   cab.add(cabModel);
   scene.add(cab);
 
-  const car = new Car(collision, stagePoints);
+  const car = new DreamcastCar({ exe, courses: courseBytes, collision: collisionBytes }, { city: GAME_NO });
   const input = new Input();
   const gs = new GameSystem();
   let customers;
@@ -106,7 +115,7 @@ async function main() {
   const hud = new Hud(hudRoot, ASSETS);
 
   function restart() {
-    car.place(city.start);
+    car.init();           // init_CarMain: the game's own start spot
     gs.reset();
     customers = new Customers(customerSet, stopSet, line, cityName);
     view.clear();
@@ -150,7 +159,7 @@ async function main() {
     euler.set(car.pitch, car.heading, car.roll);
     cab.quaternion.setFromEuler(euler);
     for (const w of wheels) {
-      w.pivot.rotation.y = w.front ? car.steer : 0;
+      w.pivot.rotation.y = car.wheelSteer[w.index];
       w.mesh.rotation.x = car.wheelSpin;
     }
 
@@ -163,7 +172,7 @@ async function main() {
     frames++;
     if (now - fpsT > 500) { fps = Math.round(frames * 1000 / (now - fpsT)); frames = 0; fpsT = now; }
     hud.update(gs, customers, car, events,
-      `${Math.round(car.kmh())} km/h  ${car.gear === 0 ? 'R' : 'D'}  ${KIND_NAMES[car.groundKind] || '-'}  ` +
+      `${Math.round(car.kmh())} km/h  ${car.gear === 0 ? 'R' : 'D' + car.gear}  ${Math.round(car.rpm)} rpm  ${KIND_NAMES[car.groundKind] || '-'}  ` +
       `(${car.pos.x.toFixed(0)}, ${car.pos.y.toFixed(0)}, ${car.pos.z.toFixed(0)})  line ${customers.carLine}  lv ${gs.level}  ${fps} fps`);
   }
   requestAnimationFrame(frame);

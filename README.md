@@ -25,10 +25,17 @@ the landmark (the arrow and picture show where) to drop them off.
   land on `#road` within 2 units.
 * `src/start.js` - the start spots and headings `init_CarMain` uses (Arcade:
   course 0's last point moved 135 along z, heading 0x5000; Original fixed values).
-* `src/car.js` - the cab: four wheel ground contacts, wall push at both axles,
-  gearbox (A reverse / B drive), the out-of-world recovery onto the nearest
-  stage point. Speeds, accelerations and grip are placeholders until
-  `exec_CarMain` / `carCalcInertia` are ported.
+* `src/dc-car.js` + `src/sh4.js` - the cab is driven by the game's own code:
+  `init_CarMain` and `exec_CarMain` from `1ST_READ.BIN` (carGearbox,
+  carWheelForces, carAngularMotion, carWheelCollision, carGroundCheck...) run in
+  a small SH-4 interpreter over the disc's course points (`SPLDCn.BIN`) and
+  collision (`COLDCn.BIN`) at their Dreamcast addresses, with the drawing,
+  sound, rumble and effects calls stubbed. Every frame matches the decomp's
+  SH-4 simulator bit for bit (`tests/fixtures/car-trace-*.json`, recorded by
+  `tools/car_trace.py`). The file documents the Car_Data fields the game uses
+  (position +0x78, angles +0x84, speed +0x15C in units per frame, gear +0x120,
+  the four wheel records at +0x1A0 - all four wheels steer) and the pad
+  mapping (TaxiSW: stick, triggers, B = Drive, A = Reverse).
 * `src/game.js` - the run's numbers, ported from the USA executable's GSystem
   code: 50 s start (option table 0x0C0896C0), a customer's time
   `int(route x 0.11 + 240 + option) x minuteScale + levelExtra`, the fare
@@ -53,7 +60,7 @@ the landmark (the arrow and picture show where) to drop them off.
 * `tools/browser-check.mjs` - headless Chrome smoke run (drives, then runs one
   fare by teleporting to a customer and their stop; screenshots).
 
-Not yet: the game's own car physics, traffic, pedestrians, the passenger in the
-cab and the get-in/get-out cut, HUD sprites, sound, Crazy Box.
+Not yet: traffic, pedestrians, the passenger in the cab and the get-in/get-out
+cut, the game's camera, HUD sprites, sound, Crazy Box.
 
 Asset extraction is documented in [docs/asset-extraction.md](docs/asset-extraction.md).
