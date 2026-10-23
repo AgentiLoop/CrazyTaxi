@@ -1386,6 +1386,67 @@ Limits:
 * Function names are only attached through the decomp's constants; USA call sites
   are listed by address, not by routine.
 * Nothing was checked in the running game.
+
+## Flycast hi-res texture packs (matching)
+
+A Flycast custom texture pack is a folder named after the disc's product id
+(`MK-51035` for the USA disc) holding `<hex hash>.png` / `.jpg` files. Flycast
+(`core/rend/TexCache.cpp` `ComputeHash`, `core/rend/CustomTexture.cpp`) names each
+file by XXH32 (seed 7) of the texture as it sits in video RAM, XORed with the
+texture control word's format bits, and reads only the leading hex digits of the
+name (`d1b3bff8bkp.jpg` counts as hash `0x1B3BFF8B`).
+
+```sh
+python3 tools/match_texture_pack.py local-assets/disc ~/Downloads/MK-51035 \
+  --output local-assets/texture_pack
+```
+
+The tool recomputes that hash for every TEXDC texture, every SPR sprite (palette
+sprites use the palette RAM that `extract_sprites.py` recovers) and every LANDDC
+picture, writes `manifest.json` (per texture: group, id, extracted PNG path, size,
+hash, pack file and its size, unmatched pack files) and one symlink per match named
+after the extracted PNG (`textures/TEXDC0/0012.jpg` -> pack file). It takes ~2 s.
+
+| Hash | Bytes hashed | XOR |
+| --- | --- | --- |
+| plain (types 1, 9, 13) | top level, `w*h*2` | format `<<27`, bit 26 for type 9 |
+| mipmapped (type 2) | top level, starting 2 bytes before `layout`'s prefix | bit 31 + format |
+| VQ (types 3, 4) | 2048-byte codebook + top-level indices `w*h/4` | bit 30 (+31 mipmapped) + format |
+| palette (Kamui 5, 7) | indices, then `XXH32` of the 16/256 palette RAM words | format 5/6 `<<27` |
+| LANDDC | the 32 KiB RGB565 twiddled picture | `0x08000000` |
+
+Result with the `MK-51035` pack (1,327 files, 1,317 distinct hashes):
+1,793 of 2,090 game textures have a replacement and 1,258 of the 1,317 pack hashes
+are used; 59 files match nothing.
+
+| Group | Matched |
+| --- | --- |
+| TEXDC0-3 (city, cars, people) | 1,306 / 1,323 |
+| SPR English + common banks | 444 / 565 |
+| SPR Japanese banks (SPRCJAP, SPRGJAP, SPRMJAP) | 0 / 122 |
+| LANDDC1 / LANDDC2 pictures | 30 / 40, 13 / 40 |
+
+Checks:
+* XXH32 matches the reference vectors; the hashes match pack names, so the bytes,
+  formats and palettes are those the game puts in video RAM.
+* Each match was compared with its extracted texture (pack image box-filtered to
+  the original size, mean RGB difference): TEXDC median 25 against 97 for random
+  pairs, sprites 9 against 118, pictures 18 against 95, all with the pack image
+  flipped vertically. The pack images are upright; the extracted PNGs are stored
+  upside down.
+* Most replacements are 4x (1,077), then 16x (225), 8x (74) and 32x (67); a few
+  have sizes that are not a power-of-two multiple.
+
+Finding: the mipmapped 16-bit textures (type 2) hash only when the top level starts
+2 bytes before the prefix `extract_textures.layout` uses, and decoding them from
+there brings 429 of 468 closer to their pack image (median difference 29.5 -> 10.9).
+`extract_textures.py` (and the models that embed its PNGs) still decode them one
+texel late.
+
+Limits:
+* The game does not load the pack yet.
+* Why 17 TEXDC textures and 59 pack files match nothing was not traced.
+
 ## Tests and web build
 
 ```sh
