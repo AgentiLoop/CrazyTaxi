@@ -4,7 +4,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import * as THREE from 'three';
-import { makeUnlit, blendPass } from '../src/scene.js';
+import { makeUnlit, blendPass, hiresCap, packKey, fitSize } from '../src/scene.js';
 
 const mesh = (name, material, colours) => {
   const g = new THREE.BufferGeometry();
@@ -54,4 +54,17 @@ test('opaque materials keep their settings', () => {
   assert.equal(m.material.transparent, false);
   assert.equal(m.material.alphaTest, 0.5);
   assert.equal(m.children.length, 0);
+});
+test('the hi-res texture pack: ?hires picks the size cap, glTF image URIs map to manifest keys', () => {
+  assert.equal(hiresCap(''), 0);
+  assert.equal(hiresCap('?city=arcade&hires=0'), 0);
+  assert.equal(hiresCap('?hires=1'), 512);
+  assert.equal(hiresCap('?hires'), 512);
+  assert.equal(hiresCap('?hires=1024'), 1024);
+  assert.equal(packKey('../textures/TEXDC1/0046.png'), 'textures/TEXDC1/0046.png');
+  assert.equal(packKey('../../textures/TEXDC0/0398.png'), 'textures/TEXDC0/0398.png');
+  assert.equal(packKey('../sprites/SPRGAME/0001.png'), null);
+  assert.deepEqual(fitSize(1024, 1024, 512), [512, 512]);
+  assert.deepEqual(fitSize(3277, 1638, 512), [512, 256]);
+  assert.deepEqual(fitSize(128, 64, 512), [128, 64]);
 });

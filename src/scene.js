@@ -35,7 +35,97 @@ loader.register((parser) => ({
 }));
 
 export function loadGltf(url, onProgress) {
-  return new Promise((resolve, reject) => loader.load(url, resolve, onProgress, reject));
+  return new Promise((resolve, reject) => loader.load(url, resolve, onProgress, reject))
+    .then((gltf) => { if (HIRES) useTexturePack(gltf); return gltf; });
+}
+
+// The hi-res texture pack (?hires=1). A Flycast custom texture pack (MK-51035), mapped
+// onto the extracted textures by tools/match_texture_pack.py (local-assets/texture_pack/:
+// manifest.json + one link per matched texture), replaces a model's TEXDC textures once
+// it has loaded: the model shows at once with the game's textures, the pack's swap in
+// as they decode. The pack's images are upright, the extracted PNGs (and so the models'
+// UVs) upside down: decoded flipped. They are 4-32 times the game's size, ~1.7 GB of
+// texels for a city at full size, so they are scaled to at most 512 texels a side
+// (?hires=N: at most N) and drawn mipmapped. A texture with see-through texels keeps the
+// game's image when the pack's has none (most of the pack is JPEG).
+const PACK = 'local-assets/texture_pack/';
+
+/** The longest side a pack image is drawn at for a page's query string (0 = no pack). */
+export function hiresCap(search) {
+  const v = new URLSearchParams(search).get('hires');
+  if (v === null || v === '0') return 0;
+  const n = parseInt(v, 10);
+  return n >= 2 ? n : 512;
+}
+const HIRES = typeof location !== 'undefined' ? hiresCap(location.search) : 0;
+
+/** The manifest's key ('textures/TEXDC1/0046.png') for a glTF image URI, else null. */
+export function packKey(uri) {
+  const m = /(?:^|\/)(textures\/TEXDC\d\/\d+\.png)$/.exec(uri || '');
+  return m ? m[1] : null;
+}
+
+/** w x h scaled to at most cap on its longer side. */
+export function fitSize(w, h, cap) {
+  const s = Math.min(1, cap / Math.max(w, h));
+  return [Math.max(1, Math.round(w * s)), Math.max(1, Math.round(h * s))];
+}
+
+let packEntries = null;      // Promise<Map<key, manifest entry>>
+const packImages = new Map(); // key -> Promise<ImageBitmap | null>
+
+function packManifest() {
+  return packEntries || (packEntries = fetch(PACK + 'manifest.json')
+    .then((r) => (r.ok ? r.json() : { textures: [] }))
+    .then((m) => new Map(m.textures.filter((t) => t.link).map((t) => [t.png, t])))
+    .catch(() => new Map()));
+}
+
+function packImage(t) {
+  let p = packImages.get(t.png);
+  if (!p) {
+    const [w, h] = fitSize(t.pack_width, t.pack_height, HIRES);
+    p = fetch(PACK + t.link)
+      .then((r) => (r.ok ? r.blob() : null))
+      .then((blob) => blob && createImageBitmap(blob, {
+        imageOrientation: 'flipY', premultiplyAlpha: 'none', colorSpaceConversion: 'none',
+        resizeWidth: w, resizeHeight: h, resizeQuality: 'high',
+      }))
+      .catch(() => null);
+    packImages.set(t.png, p);
+  }
+  return p;
+}
+
+async function useTexturePack(gltf) {
+  const { parser } = gltf;
+  const entries = await packManifest();
+  const textures = await parser.getDependencies('texture');
+  const swapped = new Map();  // Source -> Promise<boolean>
+  textures.forEach((texture, i) => {
+    const def = parser.json.textures[i];
+    const t = entries.get(packKey(def && parser.json.images[def.source].uri));
+    if (!texture || !t) return;
+    const source = texture.source;
+    if (!swapped.has(source)) {
+      swapped.set(source, packImage(t).then((img) => {
+        if (!img) return false;
+        const before = textureAlpha(texture);
+        if (before !== 'solid' && textureAlpha({ image: img }) === 'solid') return false;
+        textureAlphas.set(img, before);  // drawn as the game's texture is (see Draw order)
+        source.data = img;
+        return true;
+      }));
+    }
+    swapped.get(source).then((ok) => {
+      if (!ok) return;
+      texture.dispose();
+      texture.minFilter = THREE.LinearMipmapLinearFilter;
+      texture.generateMipmaps = true;
+      texture.anisotropy = 4;
+      texture.needsUpdate = true;
+    });
+  });
 }
 
 // Draw order. The Dreamcast sorts its translucent polygons per pixel, and most of the

@@ -1443,8 +1443,23 @@ there brings 429 of 468 closer to their pack image (median difference 29.5 -> 10
 `extract_textures.py` (and the models that embed its PNGs) still decode them one
 texel late.
 
+In the game: `?hires=1` (`src/scene.js`, `loadGltf`) swaps the pack into every
+model's TEXDC textures (city, set objects, cabs, traffic, people) after the model
+has loaded: decoded flipped (`createImageBitmap` `imageOrientation: 'flipY'`),
+scaled to at most 512 texels a side (`?hires=N`: at most N; the full-size pack is
+~1.7 GB of texels per city), mipmapped. A texture with see-through texels keeps the
+game's image when the pack's has none (31 TEXDC textures whose pack file is a
+JPEG), and the draw-order kind stays the game texture's. Checked headlessly
+(Chrome, Arcade city, same camera, 16 px blocks): no page errors, 377 pack files
+fetched (also no errors at `?hires=4096`); the picture differs from the game's by 28 (mean RGB) and by 42 with the
+pack un-flipped, so the orientation is right. About 40% of the TEXDC
+replacements are repaints rather than upscales (luminance correlation with the
+game texture below 0.5; median 0.70, random pairs 0.01), e.g. TEXDC1/0081, the
+largest area on screen at the Arcade start, is near black in the pack and light
+grey in the game.
+
 Limits:
-* The game does not load the pack yet.
+* The menu, HUD and destination pictures (SPR, LANDDC) do not use the pack yet.
 * Why 17 TEXDC textures and 59 pack files match nothing was not traced.
 
 ## Tests and web build
