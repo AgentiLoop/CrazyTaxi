@@ -2,7 +2,8 @@
 
 Game data stays under ignored `local-assets/`; do not commit or publish it. The
 extractor uses only Python's standard library. It reads the raw high-density
-MODE1/2352 track, not the `.7z` or `.chd` container directly.
+MODE1/2352 track; `tools/extract_chd.py` (below) recovers that track from the
+`.chd`, and `tar` from the `.7z`.
 
 ## Reproduce with the supplied USA archive
 
@@ -21,7 +22,35 @@ python3 tools/extract_disc.py \
 Skip the `tar` step when those files already exist. The extractor intentionally
 refuses an existing output directory. For another run choose a new directory
 inside `local-assets/`. Use `--list` to inspect ISO entries without extracting.
-The `.chd` is not needed for this verified route and remains unchanged.
+
+### From the CHD image
+```sh
+python3 tools/extract_chd.py '/Users/toddbruss/Downloads/Crazy Taxi (USA).chd' \
+  --output local-assets/chd_tracks --verify
+```
+`tools/extract_chd.py` is an independent stdlib reader for MAME CHD v5 CD/GD-ROM
+images. It decodes the compressed hunk map (RLE-coded canonical Huffman types,
+checked against the map CRC-16) and the three CD codecs chdman uses: `cdlz` (raw
+LZMA sectors plus deflate subcode; sync and P/Q ECC are rebuilt for the frames the
+hunk flags), `cdzl` (deflate plus deflate) and `cdfl` (FLAC 16-bit stereo plus
+deflate subcode; its own FLAC frame decoder handles constant, verbatim, fixed and
+LPC subframes and all stereo decorrelation modes), plus uncompressed and
+self-referencing hunks. Parent (delta) CHDs and versions other than 5 are refused.
+Each decoded hunk is checked against its map CRC-16; `--verify` also hashes all
+hunks against the header's raw SHA-1. Tracks come from the `CHGD`/`CHT2`/`CHTR`
+metadata: each takes `FRAMES` frames padded to a multiple of 4, and its last `PAD`
+frames are padding that is not written. Data sectors are written as stored (2352
+bytes, subcode dropped); audio is byte-swapped to little-endian. `--track N`
+(repeatable) picks tracks, `--list` prints tracks and per-hunk codec counts, and
+`manifest.json` records each track's layout, size and SHA-256.
+Verified October 23, 2026 on the USA `.chd` (70,092,227 bytes; 68,644 hunks of 8
+frames: 61,327 `cdlz`, 1,749 `cdzl`, 37 `cdfl`, 5,531 self): the map CRC, every hunk
+CRC and the raw SHA-1 all matched, in 52 s for all three tracks. Track 3 (504,150
+frames) has SHA-256 `027d5c54…9078`, byte-identical to the `.7z` Track 3. Track 1
+(600 frames, PAD 150) gives 450 frames identical to the `.7z` Track 1. Track 2
+(44,400 frames, PAD 43,874) gives 526 audio frames identical to the `.7z` Track 2
+after its leading 150 silent pregap frames, which the CHD does not store in that
+track. No `chdman` was used; it is not installed here.
 
 ### Everything in one command
 
@@ -38,9 +67,9 @@ runs `extract_disc.py` into `disc/` and deletes the unpacked track (keep it with
 `fcv_motions/`, `replays/`, `motion_uses/`, `customers/`, `replay_cuts/` and
 `sound_uses/` with the same cross-links the single tools take (`--textures`,
 `--courses`, `--audio`, `--landmarks`, `--customers`). The source may also be the
-raw `(Track 3).bin` or an already extracted disc folder (then `disc/` is not copied
-and the top page links to it relatively). A `.chd` is refused: CHD decompression is
-not implemented. All work happens in a hidden staging folder beside the output that
+raw `(Track 3).bin`, the `.chd` (only track 3 is decompressed, with
+`extract_chd.py`), or an already extracted disc folder (then `disc/` is not copied
+and the top page links to it relatively). All work happens in a hidden staging folder beside the output that
 is renamed into place only after every step succeeded and removed on any error;
 the output is refused if it exists. The top `manifest.json` lists each step's
 folder, seconds, file count and bytes, and `index.html` links each step's page.
@@ -50,7 +79,9 @@ Verified October 23, 2026 on this Mac: from `local-assets/disc` the 17 steps too
 by the single tools (`diff -rq`), except `audio/`, whose older copy predated the
 sound-request decoding. From the `.7z` the unpack and disc steps took 3.8 s and the
 converters 130 s; its `disc/` (manifest and track hash included) and all 17 step
-folders are identical to the disc-folder run.
+folders are identical to the disc-folder run. From the `.chd` the track 3
+decompression and disc steps took 26.9 s (2 min 39 s in all); its `disc/` and all
+17 step folders are identical (`diff -rq`) to the `.7z` run.
 
 ## Verified result, October 22, 2026
 
@@ -77,7 +108,8 @@ walking. The new reader is independently implemented and adds bounded extents,
 record checks, endian-copy validation, safe paths, cycle/duplicate rejection,
 streaming reads, no-overwrite output, temporary staging and hash verification.
 It supports this single high-density raw Mode 1 track, not arbitrary multi-track
-GDI layouts, cooked sectors, CHD decompression, interleaved or multi-extent files.
+GDI layouts, cooked sectors, interleaved or multi-extent files (CHD images are
+handled first by `extract_chd.py`).
 
 **The disc extractor recovers original containers.** The texture conversion below
 now exports the four TEXDC banks and the model conversion exports POLDC/BINC
@@ -1361,7 +1393,11 @@ PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -v
 npm run build
 ```
 
-The 189 synthetic tests include 11 disc-extractor tests for nested directories,
+The 196 synthetic tests include 6 CHD tests (synthetic v5 images with `cdlz`,
+`cdzl`, uncompressed, `cdfl` constant/fixed/verbatim and RLE-coded self hunks;
+vectorised P/Q ECC against the per-byte loop for mode 1 and 2; canonical Huffman
+import and rejection; PAD trimming, audio byte swap, one-track output and raw SHA-1
+check; refusals of non-CHD, v4 and parent images; map and hunk CRC corruption), 11 disc-extractor tests for nested directories,
 sector padding, partial final sectors, empty files, manifest hashes, no overwrite,
 invalid descriptors, endian disagreement, out-of-track extents, cycles, unsafe
 names, duplicates, multi-extent rejection, malformed records, truncated tracks,
@@ -1436,9 +1472,10 @@ The 7 sound-use tests cover the byte reversal, written registers, call sites wit
 constants, per-path words, words lost across a call, masked and run tables,
 unresolved and tail-jump sites, non-request table words, pool words that look
 like loads, the code checks and a full extraction with decomp callers and WAV links.
-The 7 one-command tests cover step order against the cross-links, the sibling
+The 8 one-command tests cover step order against the cross-links, the sibling
 folders each step is given, a disc-folder run with its manifest and page, cleanup
 after a failed step, refused sources and outputs, a `.bin` source through the disc
-extractor, and picking only Track 3 from an archive.
+extractor, a `.chd` source decompressing only track 3, and picking only Track 3
+from an archive.
 No disc image is required.
 The Python tests are invoked separately; `npm test` does not run them.
