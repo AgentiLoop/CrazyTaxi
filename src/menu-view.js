@@ -2,7 +2,10 @@
 // src/dc-menu.js) on a 2D canvas: the 640 x 480 screen scaled to the canvas, the
 // sprites and glyphs from local-assets/sprites (texture number -> PNG through the
 // manifest), farther (smaller 1/z) first, each tinted by its vertex colour the way
-// the PowerVR modulates a texture (texture x colour, alpha x alpha).
+// the PowerVR modulates a texture (texture x colour, alpha x alpha). With ?hires=1 a sprite
+// is drawn from the hi-res texture pack's image once it has loaded (src/scene.js hiresImage);
+// its size and layout stay the game's.
+import { hiresImage } from './scene.js';
 const SCREEN_W = 640, SCREEN_H = 480;
 
 export class MenuView {
@@ -16,6 +19,7 @@ export class MenuView {
       for (const t of bank.textures) if (t.png) this.paths.set(t.texture_number, t.png);
     }
     this.images = new Map();     // texture number -> HTMLImageElement (loading or loaded)
+    this.hires = new Map();      // texture number -> the pack's ImageBitmap (?hires=1)
     this.tinted = new Map();     // 'texture:r,g,b' -> canvas
   }
 
@@ -27,6 +31,7 @@ export class MenuView {
       im = new Image();
       im.src = this.assets + 'sprites/' + path;
       this.images.set(n, im);
+      im.decode().then(() => hiresImage('sprites/' + path, im)).then((b) => { if (b) this.hires.set(n, b); }, () => {});
     }
     return im.complete && im.naturalWidth ? im : null;
   }
@@ -34,11 +39,11 @@ export class MenuView {
   /** The texture multiplied by an RGB colour (alpha kept). */
   tint(n, im, colour) {
     if (colour[0] === 1 && colour[1] === 1 && colour[2] === 1) return im;
-    const key = `${n}:${colour.map((c) => Math.round(c * 255)).join(',')}`;
+    const key = `${n}:${im.width}:${colour.map((c) => Math.round(c * 255)).join(',')}`;
     let c = this.tinted.get(key);
     if (!c) {
       c = document.createElement('canvas');
-      c.width = im.naturalWidth; c.height = im.naturalHeight;
+      c.width = im.width; c.height = im.height;
       const g = c.getContext('2d');
       g.drawImage(im, 0, 0);
       g.globalCompositeOperation = 'multiply';
@@ -87,8 +92,9 @@ export class MenuView {
       ctx.translate(x0 + w / 2, y0 + h / 2);
       ctx.scale(d.uLeft > d.uRight ? -1 : 1, d.vTop > d.vBottom ? -1 : 1);
       ctx.globalAlpha = Math.min(1, d.alpha);
-      ctx.imageSmoothingEnabled = d.kind === 'glyph' || !!d.filter;
-      ctx.drawImage(this.tint(d.texture, im, d.colour), sx, sy, sw, sh, -w / 2, -h / 2, w, h);
+      const src = this.hires.get(d.texture) || im, fx = src.width / W, fy = src.height / H;
+      ctx.imageSmoothingEnabled = src !== im || d.kind === 'glyph' || !!d.filter;   // the pack's: scaled down smoothly
+      ctx.drawImage(this.tint(d.texture, src, d.colour), sx * fx, sy * fy, sw * fx, sh * fy, -w / 2, -h / 2, w, h);
     }
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.globalAlpha = 1;

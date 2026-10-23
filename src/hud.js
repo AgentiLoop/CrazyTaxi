@@ -5,6 +5,7 @@
 // (its sprites in local-assets/sprites are not used yet).
 import { formatMoney, RATING_NAMES, STATE_COUNTDOWN, STATE_TIME_UP } from './game.js';
 import { RIDING } from './customers.js';
+import { hiresLink } from './scene.js';
 
 const LANDMARK_DIR = { 'LANDDC1.AFS': 'landmarks/LANDDC1/', 'LANDDC2.AFS': 'landmarks/LANDDC2/' };
 const CARD_FRAMES = 150;
@@ -39,7 +40,12 @@ export class Hud {
     for (const ev of events) {
       if (ev.type === 'in') {
         const lm = ev.stop.landmark;
-        e.landmark.src = this.assets + LANDMARK_DIR[lm.file] + String(lm.entry).padStart(2, '0') + '.png';
+        const png = LANDMARK_DIR[lm.file] + String(lm.entry).padStart(2, '0') + '.png';
+        e.landmark.src = this.assets + png;
+        e.landmark.classList.remove('pack');
+        hiresLink(png).then((url) => {   // ?hires=1: the texture pack's picture, if it has one
+          if (url && e.landmark.src.endsWith(png)) { e.landmark.src = url; e.landmark.classList.add('pack'); }
+        });
         e['dest-name'].textContent = lm.name;
         e.dest.hidden = false;
       } else if (ev.type === 'out') {
@@ -107,7 +113,8 @@ export const HUD_CSS = `
 #hud-bar-fill { height: 100%; width: 100%; }
 #hud-bar-fill.green { background: #30e030; } #hud-bar-fill.yellow { background: #f0d020; } #hud-bar-fill.red { background: #f03030; }
 #hud-dest { position: absolute; right: 24px; top: 72px; width: 160px; text-align: center; font-size: 15px; }
-#hud-landmark { width: 128px; height: 128px; image-rendering: pixelated; border: 2px solid #fff; background: #000; }
+#hud-landmark { width: 128px; height: 128px; image-rendering: pixelated; border: 2px solid #fff; background: #000; transform: scaleY(-1); }
+#hud-landmark.pack { image-rendering: auto; transform: none; }  /* the extracted PNGs are stored upside down, the pack's upright */
 #hud-arrow { position: absolute; left: 50%; top: 24px; margin-left: -48px; font-size: 96px; line-height: 1; color: #30e030; transform-origin: 50% 50%; }
 #hud-card { position: absolute; left: 50%; top: 40%; transform: translate(-50%, -50%); text-align: center; font-size: 26px; background: rgba(0,0,0,.55); padding: 14px 28px; border-radius: 10px; }
 #hud-card .rating { font-size: 48px; } #hud-card .r2 { color: #30e030; } #hud-card .r1 { color: #f0d020; } #hud-card .r0 { color: #ff5050; }

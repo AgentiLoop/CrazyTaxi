@@ -47,7 +47,8 @@ export function loadGltf(url, onProgress) {
 // UVs) upside down: decoded flipped. They are 4-32 times the game's size, ~1.7 GB of
 // texels for a city at full size, so they are scaled to at most 512 texels a side
 // (?hires=N: at most N) and drawn mipmapped. A texture with see-through texels keeps the
-// game's image when the pack's has none (most of the pack is JPEG).
+// game's image when the pack's has none (most of the pack is JPEG). The menu's sprites
+// (src/menu-view.js) and the HUD's destination pictures (src/hud.js) use it too.
 const PACK = 'local-assets/texture_pack/';
 
 /** The longest side a pack image is drawn at for a page's query string (0 = no pack). */
@@ -57,7 +58,7 @@ export function hiresCap(search) {
   const n = parseInt(v, 10);
   return n >= 2 ? n : 512;
 }
-const HIRES = typeof location !== 'undefined' ? hiresCap(location.search) : 0;
+export const HIRES = typeof location !== 'undefined' ? hiresCap(location.search) : 0;
 
 /** The manifest's key ('textures/TEXDC1/0046.png') for a glTF image URI, else null. */
 export function packKey(uri) {
@@ -95,6 +96,23 @@ function packImage(t) {
     packImages.set(t.png, p);
   }
   return p;
+}
+
+/**
+ * The pack's image for an extracted picture ('sprites/SPRADV/0000.png'), stored the same way
+ * up as the PNG, or null (no pack, no match, or the pack's has no alpha where `original` has).
+ */
+export async function hiresImage(png, original) {
+  const t = HIRES ? (await packManifest()).get(png) : null;
+  const img = t ? await packImage(t) : null;
+  if (!img || (textureAlpha({ image: original }) !== 'solid' && textureAlpha({ image: img }) === 'solid')) return null;
+  return img;
+}
+
+/** The URL of the pack's image (upright) for an extracted picture, or null. */
+export async function hiresLink(png) {
+  const t = HIRES ? (await packManifest()).get(png) : null;
+  return t ? PACK + t.link : null;
 }
 
 async function useTexturePack(gltf) {

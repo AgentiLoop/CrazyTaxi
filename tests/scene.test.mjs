@@ -4,7 +4,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import * as THREE from 'three';
-import { makeUnlit, blendPass, hiresCap, packKey, fitSize } from '../src/scene.js';
+import { makeUnlit, blendPass, hiresCap, packKey, fitSize, hiresImage, hiresLink } from '../src/scene.js';
 
 const mesh = (name, material, colours) => {
   const g = new THREE.BufferGeometry();
@@ -67,4 +67,8 @@ test('the hi-res texture pack: ?hires picks the size cap, glTF image URIs map to
   assert.deepEqual(fitSize(1024, 1024, 512), [512, 512]);
   assert.deepEqual(fitSize(3277, 1638, 512), [512, 256]);
   assert.deepEqual(fitSize(128, 64, 512), [128, 64]);
+});
+test('the hi-res texture pack is off without ?hires: no pack pictures for the menu and the HUD', async () => {
+  assert.equal(await hiresLink('landmarks/LANDDC1/00.png'), null);
+  assert.equal(await hiresImage('sprites/SPRADV/0000.png', null), null);
 });

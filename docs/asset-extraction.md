@@ -1458,8 +1458,21 @@ game texture below 0.5; median 0.70, random pairs 0.01), e.g. TEXDC1/0081, the
 largest area on screen at the Arcade start, is near black in the pack and light
 grey in the game.
 
+The menu and driver select (`src/menu-view.js`) draw a sprite from the pack's image
+(`hiresImage`: same decode and cap, the same alpha guard against the PNG) once it
+has loaded, at the game's size and layout (source rectangles scaled, smoothed). The
+HUD's destination picture (`src/hud.js`) shows the pack's file (`hiresLink`, upright)
+and otherwise the extracted PNG flipped with CSS (each PNG is the pack's image
+flipped, like the sprites, which are stored upside down; nobody has checked the
+pictures by eye). Checked headlessly: driver select 65 pack
+files, no errors, mean RGB difference 7.4 against `?hires` off (same layout); a fare
+in the Arcade city shows `texture_pack/landmarks/LANDDC1/00.jpg`, no errors.
+
 Limits:
-* The menu, HUD and destination pictures (SPR, LANDDC) do not use the pack yet.
+* The driving HUD does not draw the game's sprites at all (DOM stand-ins), so the
+  pack's HUD sprites (SPRGAME / SPRGENG) are unused; the menu's vector stand-ins
+  (bars, text) replace their sprites with or without the pack.
+* Japanese sprites (122) have no pack images.
 * Why 17 TEXDC textures and 59 pack files match nothing was not traced.
 
 ## Tests and web build
