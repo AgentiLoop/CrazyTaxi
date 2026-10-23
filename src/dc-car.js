@@ -208,6 +208,7 @@ export class DreamcastCar {
     this.speed = 0;            // units per second (+0x15C * 60)
     this.steer = 0;            // front wheel angle, rad
     this.wheelSteer = [0, 0, 0, 0];
+    this.wheelHeight = [0, 0, 0, 0];   // the drawn wheel hub's height in the car's frame
     this.wheelSpin = 0;
     this.gear = 1;
     this.rpm = 0;
@@ -379,6 +380,12 @@ export class DreamcastCar {
     this.brake = cpu.rf(CAR + 0x11C);
     for (let w = 0; w < 4; w++) this.wheelSteer[w] = cpu.rs16(CAR + 0x1A0 + w * 0x84 + 0x80) * TURN;
     this.steer = this.wheelSteer[0];
+    // putPlayerCar draws each wheel's hub at y = radius (+0x12C) - suspension (+0x30 of
+    // its record) - 0.7 in the car's frame; the front pair at the average of the two.
+    const r = cpu.rf(CAR + 0x12C), s = (w) => cpu.rf(CAR + 0x1A0 + w * 0x84 + 0x30);
+    this.wheelHeight[0] = this.wheelHeight[1] = r - (s(0) + s(1)) * 0.5 - 0.7;
+    this.wheelHeight[2] = r - s(2) - 0.7;
+    this.wheelHeight[3] = r - s(3) - 0.7;
     const kind = cpu.r32(G.groundKind) | 0;
     this.groundKind = kind;
     this.onGround = kind !== -1;

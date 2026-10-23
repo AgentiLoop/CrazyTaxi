@@ -172,6 +172,7 @@ async function main() {
     euler.set(car.pitch, car.heading, car.roll);
     cab.quaternion.setFromEuler(euler);
     for (const w of wheels) {
+      w.pivot.position.y = car.wheelHeight[w.index];
       w.pivot.rotation.y = car.wheelSteer[w.index];
       w.mesh.rotation.x = car.wheelSpin;
     }
