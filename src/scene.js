@@ -82,12 +82,28 @@ function packManifest() {
     .catch(() => new Map()));
 }
 
+// At most PACK_FETCHES pack downloads at once: the browser's few connections per server
+// stay free for the game's own files (the people's models waited behind hundreds).
+const PACK_FETCHES = 2;
+let packFetching = 0;
+const packQueue = [];
+function packFetch(url) {
+  return new Promise((resolve) => { packQueue.push([url, resolve]); packNext(); });
+}
+function packNext() {
+  if (packFetching >= PACK_FETCHES || !packQueue.length) return;
+  const [url, resolve] = packQueue.shift();
+  packFetching++;
+  const p = fetch(url).then((r) => (r.ok ? r.blob() : null)).catch(() => null);
+  p.then(() => { packFetching--; packNext(); });
+  resolve(p);
+}
+
 function packImage(t) {
   let p = packImages.get(t.png);
   if (!p) {
     const [w, h] = fitSize(t.pack_width, t.pack_height, HIRES);
-    p = fetch(PACK + t.link)
-      .then((r) => (r.ok ? r.blob() : null))
+    p = packFetch(PACK + t.link)
       .then((blob) => blob && createImageBitmap(blob, {
         imageOrientation: 'flipY', premultiplyAlpha: 'none', colorSpaceConversion: 'none',
         resizeWidth: w, resizeHeight: h, resizeQuality: 'high',
