@@ -23,6 +23,35 @@ refuses an existing output directory. For another run choose a new directory
 inside `local-assets/`. Use `--list` to inspect ISO entries without extracting.
 The `.chd` is not needed for this verified route and remains unchanged.
 
+### Everything in one command
+
+```sh
+python3 tools/extract_all.py '/Users/toddbruss/Downloads/Crazy Taxi (USA).7z' \
+  --output local-assets/all
+```
+
+`tools/extract_all.py` runs every converter below in dependency order into one new
+folder: it unpacks only the archive's `(Track 3).bin` with `tar` into `tracks/`,
+runs `extract_disc.py` into `disc/` and deletes the unpacked track (keep it with
+`--keep-track`), then writes `textures/`, `models/`, `sprites/`, `pvr/`, `audio/`,
+`characters/`, `vehicles/`, `props/`, `collision/`, `courses/`, `landmarks/`,
+`fcv_motions/`, `replays/`, `motion_uses/`, `customers/`, `replay_cuts/` and
+`sound_uses/` with the same cross-links the single tools take (`--textures`,
+`--courses`, `--audio`, `--landmarks`, `--customers`). The source may also be the
+raw `(Track 3).bin` or an already extracted disc folder (then `disc/` is not copied
+and the top page links to it relatively). A `.chd` is refused: CHD decompression is
+not implemented. All work happens in a hidden staging folder beside the output that
+is renamed into place only after every step succeeded and removed on any error;
+the output is refused if it exists. The top `manifest.json` lists each step's
+folder, seconds, file count and bytes, and `index.html` links each step's page.
+
+Verified October 23, 2026 on this Mac: from `local-assets/disc` the 17 steps took
+2 min 9 s and wrote 4,744 files (255 MB); every step folder matched the folders made
+by the single tools (`diff -rq`), except `audio/`, whose older copy predated the
+sound-request decoding. From the `.7z` the unpack and disc steps took 3.8 s and the
+converters 130 s; its `disc/` (manifest and track hash included) and all 17 step
+folders are identical to the disc-folder run.
+
 ## Verified result, October 22, 2026
 
 - Archive Track 3: 1,185,760,800 bytes; primary ISO descriptor at relative sector
@@ -1332,7 +1361,7 @@ PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -v
 npm run build
 ```
 
-The 182 synthetic tests include 11 disc-extractor tests for nested directories,
+The 189 synthetic tests include 11 disc-extractor tests for nested directories,
 sector padding, partial final sectors, empty files, manifest hashes, no overwrite,
 invalid descriptors, endian disagreement, out-of-track extents, cycles, unsafe
 names, duplicates, multi-extent rejection, malformed records, truncated tracks,
@@ -1407,5 +1436,9 @@ The 7 sound-use tests cover the byte reversal, written registers, call sites wit
 constants, per-path words, words lost across a call, masked and run tables,
 unresolved and tail-jump sites, non-request table words, pool words that look
 like loads, the code checks and a full extraction with decomp callers and WAV links.
+The 7 one-command tests cover step order against the cross-links, the sibling
+folders each step is given, a disc-folder run with its manifest and page, cleanup
+after a failed step, refused sources and outputs, a `.bin` source through the disc
+extractor, and picking only Track 3 from an archive.
 No disc image is required.
 The Python tests are invoked separately; `npm test` does not run them.
