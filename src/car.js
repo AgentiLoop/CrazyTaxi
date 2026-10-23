@@ -25,6 +25,7 @@ export const WHEEL_RADIUS = 2.964;
 const BODY_RADIUS = 10;      // wall test radius at each axle
 const WHEEL_REACH = 6;       // how far above the wheel the ground may be found
 const RECOVERY_LIFT = 30;
+const HOLD_INPUT = { steer: 0, accel: 0, brake: 1, drive: false, reverse: false, drivePressed: false, reversePressed: false };
 
 const TUNE = {
   topSpeed: 190 / 3.6 * UNITS_PER_METRE,      // ~580 u/s
@@ -58,6 +59,8 @@ export class Car {
     this.onGround = true;
     this.groundKind = -1;
     this.wheelSpin = 0;
+    this.yawRate = 0;        // heading change per step (the game's (short)+0x198)
+    this.hold = false;       // Car_Data +0x58: a customer is getting in or out
     this.lastWall = null;
     this.recoveries = 0;
   }
@@ -104,6 +107,8 @@ export class Car {
   /** One 60 Hz step. input: { steer, accel, brake, drive, reverse, drivePressed, reversePressed }. */
   update(input) {
     const dt = STEP;
+    if (this.hold) input = HOLD_INPUT;
+    const heading0 = this.heading;
 
     // Gearbox (carGearbox): A held = reverse, B pressed = drive.
     if (input.reverse) this.gear = 0;
@@ -127,6 +132,7 @@ export class Car {
     }
     let speed = this.speed + a * dt;
     if (input.brake && !input.accel && Math.sign(speed) !== Math.sign(this.speed)) speed = 0;
+    if (this.hold) speed = 0;
     const top = this.gear === 0 ? TUNE.reverseSpeed : TUNE.topSpeed;
     speed = Math.max(-TUNE.reverseSpeed, Math.min(top, speed));
     this.speed = speed;
@@ -136,6 +142,9 @@ export class Car {
       this.heading += speed / WHEELBASE * Math.tan(this.steer) * dt;
     }
     this.heading = ((this.heading % (Math.PI * 2)) + Math.PI * 2) % (Math.PI * 2);
+    let dh = this.heading - heading0;
+    if (dh > Math.PI) dh -= Math.PI * 2; else if (dh < -Math.PI) dh += Math.PI * 2;
+    this.yawRate = dh;
 
     // Horizontal velocity follows the heading with finite grip (a little slide).
     const f = this.forward();
