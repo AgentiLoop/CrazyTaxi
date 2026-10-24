@@ -151,10 +151,17 @@ let packEntries = null;      // Promise<Map<key, manifest entry>>
 const packImages = new Map(); // key -> Promise<ImageBitmap | null>
 const packRequests = new Map(); // key -> { url, resolve, textures: Set<THREE.Source> }
 
+// The pack's black top (flat near-black asphalt, mean 26 where the game's is grey 143-179):
+// not loaded, the game's road kept in hi-res mode.
+const PACK_SKIP = new Set([
+  'textures/TEXDC1/0081.png', 'textures/TEXDC2/0081.png', 'textures/TEXDC3/0042.png',
+  'textures/TEXDC1/0084.png', 'textures/TEXDC2/0083.png', 'textures/TEXDC3/0044.png',
+]);
+
 function packManifest() {
   return packEntries || (packEntries = fetch(PACK + 'manifest.json')
     .then((r) => (r.ok ? r.json() : { textures: [] }))
-    .then((m) => new Map(m.textures.filter((t) => t.link).map((t) => [t.png, t])))
+    .then((m) => new Map(m.textures.filter((t) => t.link && !PACK_SKIP.has(t.png)).map((t) => [t.png, t])))
     .catch(() => new Map()));
 }
 
