@@ -20,6 +20,29 @@ import * as THREE from 'three';
 import { loadGltf, makeUnlit, toUnlit, blendPass } from './scene.js';
 
 const LAMP = /^lamp_([ab])_(near|far)_(\d)_/;
+// Shadow volumes farther than this from the camera are hidden: past it the depth
+// buffer is too coarse for the stencil test and the volume shows as a grey box.
+const SHADOW_DIST = 600;
+// entryCarPut stops drawing cars past 1800 (src/dc-car.js): fade them in with a screen
+// dither between these camera distances instead of popping in at the edge.
+const FADE_NEAR = 1400, FADE_FAR = 1750;
+const faded = new WeakSet();
+
+/** Dither a traffic material out with its fragments' distance from the camera. */
+function fadeIn(mat) {
+  if (!mat || faded.has(mat)) return;
+  faded.add(mat);
+  mat.onBeforeCompile = (shader) => {
+    shader.vertexShader = 'varying float vFadeDist;\n' + shader.vertexShader.replace(
+      '#include <project_vertex>', '#include <project_vertex>\n  vFadeDist = length(mvPosition.xyz);');
+    shader.fragmentShader = 'varying float vFadeDist;\n' + shader.fragmentShader.replace(
+      '#include <clipping_planes_fragment>',
+      `#include <clipping_planes_fragment>
+  float fadeA = clamp((${FADE_FAR.toFixed(1)} - vFadeDist) / ${(FADE_FAR - FADE_NEAR).toFixed(1)}, 0.0, 1.0);
+  if (fadeA < 1.0 && fract(52.9829189 * fract(dot(gl_FragCoord.xy, vec2(0.06711056, 0.00583715)))) >= fadeA) discard;`);
+  };
+  mat.customProgramCacheKey = () => 'trafficFade';
+}
 
 const volume = (side, zPass) => new THREE.MeshBasicMaterial({
   side, colorWrite: false, depthWrite: false, transparent: true, fog: false,
@@ -92,6 +115,11 @@ export class TrafficView {
         for (const [name, mat] of byName) u.set(name, toUnlit(mat, true, cache));
         variants.set(mesh, u);
       }
+      const fade = (mat) => { fadeIn(mat); fadeIn(blendPass(mat)); };
+      for (const s of Object.values(scenes)) {
+        s.traverse((o) => { if (o.isMesh) [].concat(o.material).forEach(fade); });
+      }
+      for (const u of variants.values()) u.forEach(fade);
       const loaded = { near: scenes.near, far: scenes.far, lamps: scenes.lamps, variants };
       this.models.set(type, loaded);
       return loaded;
@@ -110,12 +138,12 @@ export class TrafficView {
     const far = model.far ? model.far.clone() : new THREE.Group();
     const lamps = model.lamps ? model.lamps.clone() : new THREE.Group();
     body.add(near, far, lamps);
-    const wheels = [], painted = [], lampSets = { near: {}, far: {} };
+    const wheels = [], painted = [], shadows = [], lampSets = { near: {}, far: {} };
     for (const part of [near, far]) {
       for (const o of [...part.children]) {
         if (o.name.startsWith('wheel_')) wheels.push(o);
         else if (o.name.startsWith('shadow_')) {
-          if (part === near) root.add(o);          // the shadow stays on the ground under the body
+          if (part === near) { root.add(o); shadows.push(o); } // the shadow stays on the ground under the body
           else o.visible = false;
           const meshes = [];
           o.traverse((m) => { if (m.isMesh) meshes.push(m); });
@@ -129,7 +157,7 @@ export class TrafficView {
     }
     root.traverse((o) => { if (o.isMesh && model.variants.has(o.name)) painted.push(o); });
     this.group.add(root);
-    return { type, root, body, near, far, lamps, wheels, painted, lampSets, wheelAngle: 0, colour: null, model };
+    return { type, root, body, near, far, lamps, wheels, painted, shadows, lampSets, wheelAngle: 0, colour: null, model };
   }
 
   take(type) {
@@ -146,7 +174,7 @@ export class TrafficView {
   }
 
   /** @param {import('./dc-car.js').TrafficCar[]} cars the cars drawn this frame */
-  update(cars) {
+  update(cars, camera) {
     const seen = new Set();
     this.drawn = 0;
     for (const c of cars) {
@@ -162,6 +190,10 @@ export class TrafficView {
       }
       seen.add(c.id);
       this.pose(inst, c);
+      // The cable car's (P_Cable) volume showed as a grey box too: its shadow is not drawn.
+      const shadowOn = this.types[c.type].name !== 'P_Cable' &&
+        (!camera || inst.root.position.distanceTo(camera.position) < SHADOW_DIST);
+      for (const s of inst.shadows) s.visible = shadowOn;
       this.drawn++;
     }
     for (const [id, inst] of this.instances) {
@@ -174,7 +206,7 @@ export class TrafficView {
     inst.root.rotation.set(c.pitch, c.heading, c.roll, 'YXZ');
     inst.body.position.y = c.bodyY;
     inst.body.rotation.set(c.bodyPitch, 0, c.bodyRoll, 'XZY');
-    const detailed = c.detail === 0 || !inst.model.far;
+    const detailed = true;                // distant cars draw the detailed model too, like the close ones
     inst.near.visible = detailed;
     inst.far.visible = !detailed;
     inst.wheelAngle += 0.2 * c.speed;

@@ -37,8 +37,54 @@ loader.register((parser) => ({
 }));
 
 export function loadGltf(url, onProgress) {
+  ktx2Loader();
   return new Promise((resolve, reject) => loader.load(url, resolve, onProgress, reject))
-    .then((gltf) => { models.push(gltf); if (HIRES) useTexturePack(gltf); return gltf; });
+    .then(async (gltf) => { await bakedAlphas(gltf); models.push(gltf); if (HIRES) useTexturePack(gltf); return gltf; });
+}
+
+let ktx2 = null;   // KTX2Loader: the release's textures (KHR_texture_basisu, tools/ktx2_release.py) and the pack's
+/**
+ * The one KTX2Loader, made the first time it is asked for and given to the glTF loader. Its
+ * formats are those of a WebGL2 context of its own, let go once asked: the menu's renderer
+ * (select-view.js) loads models before the game's exists, and they share the GPU.
+ */
+export function ktx2Loader() {
+  if (ktx2) return ktx2;
+  const gl = typeof document !== 'undefined' ? document.createElement('canvas').getContext('webgl2') : null;
+  const extensions = { has: (name) => !!(gl && gl.getExtension(name)), get: (name) => gl && gl.getExtension(name) };
+  ktx2 = new KTX2Loader().setTranscoderPath((RELEASE || PACK) + 'basis/').detectSupport({ extensions });
+  const lose = gl && gl.getExtension('WEBGL_lose_context');
+  if (lose) lose.loseContext();
+  loader.setKTX2Loader(ktx2);
+  return ktx2;
+}
+
+/** A model texture by its extracted PNG's URL (ASSETS + 'textures/...png'); with a release, its KTX2 (tools/ktx2_release.py) in place, once loaded. */
+export function gameTexture(url) {
+  if (!RELEASE) return new THREE.TextureLoader().load(url);
+  const texture = new THREE.CompressedTexture();
+  ktx2Loader().load(url.replace(/\.png$/, '.ktx2'), (k) => {
+    const { wrapS, wrapT } = texture;
+    texture.copy(k);
+    texture.wrapS = wrapS;
+    texture.wrapT = wrapT;
+    texture.needsUpdate = true;
+  });
+  return texture;
+}
+
+/**
+ * A GPU-compressed texture can't be read back: the release's KTX2 textures carry the alpha
+ * values their PNGs held (extras.alpha, tools/ktx2_release.py), which textureAlpha returns.
+ */
+async function bakedAlphas(gltf) {
+  const defs = gltf.parser.json.textures || [];
+  if (!defs.some((d) => d.extras && d.extras.alpha)) return;
+  const textures = await gltf.parser.getDependencies('texture');
+  textures.forEach((t, i) => {
+    const kind = defs[i].extras && defs[i].extras.alpha;
+    if (t && kind) textureAlphas.set(t.image, kind);
+  });
 }
 
 /**
@@ -138,16 +184,20 @@ function swapIn(texture, img) {
   keepOriginal(texture);
   source.data = img;
   texture.dispose();
+  texture.isCompressedTexture = false;   // the game's may be (the release's KTX2)
+  texture.mipmaps = [];
+  texture.format = THREE.RGBAFormat;
+  texture.type = THREE.UnsignedByteType;
   texture.minFilter = THREE.LinearMipmapLinearFilter;
   texture.generateMipmaps = true;
   texture.anisotropy = 4;
   texture.needsUpdate = true;
 }
 
-/** The manifest's key ('textures/TEXDC1/0046.png') for a glTF image URI, else null. */
+/** The manifest's key ('textures/TEXDC1/0046.png') for a glTF image URI (the PNG's or the release's KTX2), else null. */
 export function packKey(uri) {
-  const m = /(?:^|\/)(textures\/TEXDC\d\/\d+\.png)$/.exec(uri || '');
-  return m ? m[1] : null;
+  const m = /(?:^|\/)(textures\/TEXDC\d\/\d+)\.(?:png|ktx2)$/.exec(uri || '');
+  return m ? m[1] + '.png' : null;
 }
 
 /** w x h scaled to at most cap on its longer side. */
@@ -175,8 +225,8 @@ const packRequests = new Map(); // key -> { url, resolve, textures: Set<THREE.So
 function packManifest() {
   return packEntries || (packEntries = fetch(PACK + 'manifest.json')
     .then((r) => (r.ok ? r.json() : { textures: [] }))
-    .then((m) => new Map(m.textures.filter((t) => t.link).map((t) => [t.png, t])))
-    .catch(() => new Map()));
+    .then((m) => Object.assign(new Map(m.textures.filter((t) => t.link).map((t) => [t.png, t])), { paints: m.paints || [] }))
+    .catch(() => Object.assign(new Map(), { paints: [] })));
 }
 
 // At most PACK_FETCHES pack downloads at once, each at low fetch priority: the browser's
@@ -193,12 +243,11 @@ const packQueue = [];
 const RANK_MS = 250;
 let viewScene = null, viewCamera = null, rankedAt = -Infinity;
 
-let ktx2 = null;   // KTX2Loader for the release's KTX2 textures: needs the renderer (its formats)
-/** The scene and camera whose view orders the pack's downloads, the renderer drawing them (main.js). */
-export function packView(scene, camera, renderer) {
+/** The scene and camera whose view orders the pack's downloads (main.js). */
+export function packView(scene, camera) {
   viewScene = scene;
   viewCamera = camera;
-  if (renderer && !ktx2) ktx2 = new KTX2Loader().setTranscoderPath(PACK + 'basis/').detectSupport(renderer);
+  if (RELEASE) ktx2Loader();   // the pack's KTX2s
 }
 
 const _frustum = new THREE.Frustum(), _matrix = new THREE.Matrix4(), _sphere = new THREE.Sphere();
@@ -271,12 +320,11 @@ function packImage(t, texture) {
 }
 
 const packTextures = new Map();   // key -> Promise<THREE.CompressedTexture | null>
-/** The KTX2 texture of a manifest entry (t.ktx2), queued like packImage's downloads. */
-function packKtx2(t, texture) {
-  const key = t.png + '#ktx2';
+/** The pack's KTX2 texture `url` (a manifest entry's t.ktx2, a paint's), queued like packImage's downloads. */
+function packKtx2(key, url, texture) {
   let p = packTextures.get(key);
   if (!p) {
-    const req = { url: PACK + t.ktx2, resolve: null, textures: new Set() };
+    const req = { url: PACK + url, resolve: null, textures: new Set() };
     packRequests.set(key, req);
     p = new Promise((resolve) => { req.resolve = resolve; packQueue.push(req); packNext(); })
       .then((blob) => blob && blob.arrayBuffer())
@@ -360,7 +408,9 @@ function packedImage(t, texture) {
 function packEntriesOf(json, textures, entries) {
   return textures.map((texture, i) => {
     const def = json.textures[i];
-    const t = entries.get(packKey(def && json.images[def.source].uri));
+    const basisu = def && def.extensions && def.extensions.KHR_texture_basisu;
+    const source = def && (basisu ? basisu.source : def.source);
+    const t = entries.get(packKey(def && json.images[source].uri));
     return texture && t ? [texture, t] : null;
   }).filter(Boolean);
 }
@@ -375,7 +425,7 @@ async function useTexturePack(gltf) {
   for (const [texture, t] of keyed) {
     const source = texture.source;
     if (t.ktx2 && ktx2) {
-      packKtx2(t, texture).then((k) => {
+      packKtx2(t.png + '#ktx2', t.ktx2, texture).then((k) => {
         if (!k || !HIRES || !models.includes(gltf)) return;
         textureAlphas.set(k.image, textureAlpha({ image: gameImage(source) }));   // drawn as the game's texture is
         swapInCompressed(texture, k);
@@ -388,7 +438,7 @@ async function useTexturePack(gltf) {
   // The traffic cars' paints (tools/extract_vehicles.py): a body texture baked with the
   // PowerVR decal-alpha rule over the paint colour and embedded, so it has no URI to
   // match. Its material's extras name the TEXDC texture and the colour: bake the pack's
-  // image the same way.
+  // image the same way (the release's are baked already: manifest `paints`, KTX2).
   const materials = await parser.getDependencies('material');
   const baked = new Map();      // `${png}@${colour}` -> Promise<canvas | null>
   for (const m of materials) {
@@ -398,6 +448,15 @@ async function useTexturePack(gltf) {
     if (!t) continue;
     const id = `${t.png}@${colour.join(',')}`;
     const texture = m.map;
+    const paint = ktx2 && entries.paints.find((p) => p.png === t.png && p.colour.every((c, i) => c === colour[i]));
+    if (paint) {
+      packKtx2(id, paint.ktx2, texture).then((k) => {
+        if (!k || !HIRES || !models.includes(gltf) || texture.source.data === k.image) return;
+        textureAlphas.set(k.image, textureAlpha({ image: gameImage(texture.source) }));   // alpha = the paint's: unchanged
+        swapInCompressed(texture, k);
+      });
+      continue;
+    }
     const image = packImage(t, texture);
     if (!baked.has(id)) baked.set(id, image.then((img) => img && decalAlpha(img, colour)));
     baked.get(id).then((img) => {
@@ -433,7 +492,9 @@ function showBatchedPack() {
     const scale = Math.min(BATCH_SCALE, p.renderer.capabilities.maxTextureSize / batch.atlasSize, Math.max(1, 2 ** Math.floor(Math.log2(PACK_CAP / 128))));
     p.atlases = p.keyed.then((keyed) => (HIRES ? scaledAtlases(p.renderer, batch, scale, (source) => {
       const k = keyed.get(source);
-      return k ? packedImage(k[1], k[0]) : Promise.resolve(null);
+      if (!k) return Promise.resolve(null);
+      // the release's: its KTX2 (already cut by the game's alpha), drawn into the tile on the GPU
+      return k[1].ktx2 && ktx2 ? packKtx2(k[1].png + '#ktx2', k[1].ktx2, k[0]) : packedImage(k[1], k[0]);
     }) : null));
   }
   p.atlases.then((atlases) => {
@@ -489,7 +550,12 @@ function textureAlpha(texture) {
   const canvas = typeof OffscreenCanvas !== 'undefined' ? new OffscreenCanvas(w, h) : null;
   const ctx = canvas && w && h ? canvas.getContext('2d', { willReadFrequently: true }) : null;
   if (ctx) {
-    ctx.drawImage(img, 0, 0);
+    try {
+      ctx.drawImage(img, 0, 0);
+    } catch {
+      textureAlphas.set(img, kind);   // not a picture (a compressed texture's levels)
+      return kind;
+    }
     const d = ctx.getImageData(0, 0, w, h).data;
     let zero = false, mid = false;
     for (let i = 3; i < d.length; i += 4) {

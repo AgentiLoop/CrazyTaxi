@@ -14,12 +14,15 @@ before drawing it is done here once instead, as a compressed texture can't be re
     anyway), and the file is encoded without alpha.
 Writes <out>/<png with .ktx2> with a full mip chain and adds ktx2, ktx2_width, ktx2_height to
 each such entry of <out>/manifest.json (which must be a copy of the pack's).
+The traffic cars' paints are baked from those images the way scene.js decalAlpha does it, one
+per (texture, colour) the cars' materials name, as <out>/paints/*.ktx2: manifest `paints`.
 Needs Pillow and basisu (brew install basis_universal)."""
 import argparse
 from concurrent.futures import ThreadPoolExecutor
 import json
 import os
 from pathlib import Path
+import struct
 import subprocess
 import tempfile
 
@@ -48,9 +51,7 @@ def prepare(pack_file, game_png, cap):
     return im, True
 
 
-def encode(job):
-    src, game, dst, cap, quality = job
-    img, alpha = prepare(src, game, cap)
+def basisu(img, dst, quality):
     dst.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory() as tmp:
         png = Path(tmp) / "in.png"
@@ -58,7 +59,41 @@ def encode(job):
         subprocess.run(["basisu", "-ktx2", "-mipmap", "-q", str(quality), "-max_threads", "2",
                         "-quiet", str(png), "-output_file", str(dst)],
                        check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+
+
+def encode(job):
+    src, game, dst, cap, quality = job
+    img, alpha = prepare(src, game, cap)
+    basisu(img, dst, quality)
     return img.size, alpha
+
+
+def paints(game):
+    """The traffic cars' paints (tools/extract_vehicles.py): {(texture png, colour)} from the materials' extras."""
+    found = set()
+    for glb in (game / "vehicles").rglob("*.glb"):
+        d = glb.read_bytes()
+        j = json.loads(d[20:20 + struct.unpack_from("<I", d, 12)[0]])
+        for m in j.get("materials", []):
+            x = m.get("extras", {})
+            if "decal_alpha_colour" in x:
+                png = f"textures/{str(x['texture_bank']).replace('.BIN', '')}/{int(x['texture']):04d}.png"
+                found.add((png, tuple(x["decal_alpha_colour"])))
+    return sorted(found)
+
+
+def bake(job):
+    """A paint the way scene.js decalAlpha bakes it: RGB = pack RGB * A + colour RGB * (1 - A), A = colour A."""
+    src, colour, dst, cap, quality = job
+    with Image.open(src) as im:
+        im = im.convert("RGBA").transpose(Image.FLIP_TOP_BOTTOM)
+    im = im.resize(ktx2_size(im.width, im.height, cap), Image.LANCZOS)
+    level = [min(255, max(0, round(255 * c))) for c in colour]
+    flat = Image.new("RGB", im.size, tuple(level[:3]))
+    img = Image.composite(im.convert("RGB"), flat, im.getchannel("A"))
+    if level[3] < 255:
+        img.putalpha(level[3])
+    basisu(img, dst, quality)
 
 
 def main():
@@ -74,14 +109,22 @@ def main():
     entries = [t for t in manifest["textures"] if t.get("link") and t["png"].startswith("textures/")]
     jobs = [(pack / t["link"], game / t["png"], out / (t["png"][:-4] + ".ktx2"), args.cap, args.quality)
             for t in entries]
+    linked = {t["png"]: t for t in entries}
+    painted = [(png, colour) for png, colour in paints(game) if png in linked]
+    paint_jobs = [(pack / linked[png]["link"], colour, out / "paints" / f"{png[9:-4].replace('/', '_')}_{i}.ktx2", args.cap, args.quality)
+                  for i, (png, colour) in enumerate(painted)]
     with ThreadPoolExecutor(max(1, (os.cpu_count() or 4) // 2)) as ex:
         results = list(ex.map(encode, jobs))
+        list(ex.map(bake, paint_jobs))
     for t, ((w, h), _), job in zip(entries, results, jobs):
         t["ktx2"], t["ktx2_width"], t["ktx2_height"] = str(job[2].relative_to(out)), w, h
+    manifest["paints"] = [{"png": png, "colour": list(colour), "ktx2": str(job[2].relative_to(out))}
+                          for (png, colour), job in zip(painted, paint_jobs)]
     (out / "manifest.json").write_text(json.dumps(manifest, indent=1))
-    total = sum(j[2].stat().st_size for j in jobs)
-    print(f"ktx2: {len(jobs)} textures ({sum(a for _, a in results)} with alpha), {total / 1e6:.1f} MB")
+    total = sum(j[2].stat().st_size for j in jobs + paint_jobs)
+    print(f"ktx2: {len(jobs)} textures ({sum(a for _, a in results)} with alpha), {len(paint_jobs)} paints, {total / 1e6:.1f} MB")
 
 
 if __name__ == "__main__":
     main()
+

@@ -27,6 +27,7 @@ import * as THREE from 'three';
 import { Line2 } from 'three/addons/lines/Line2.js';
 import { LineGeometry } from 'three/addons/lines/LineGeometry.js';
 import { LineMaterial } from 'three/addons/lines/LineMaterial.js';
+import { gameTexture } from './scene.js';
 
 const RING_FAR = 0x0C0EA510, RING_NEAR = 0x0C0E9A10, DOLLAR = 0x0C0EA130;
 const MARKER_TEXTURE = 'textures/TEXDC0/0116.png';
@@ -75,7 +76,7 @@ export function readModel(cpu, address) {
 export class KyakuMarks {
   constructor(scene, assets) {
     this.scene = scene;
-    this.texture = new THREE.TextureLoader().load(assets + MARKER_TEXTURE);
+    this.texture = gameTexture(assets + MARKER_TEXTURE);
     this.texture.flipY = false;   // the models' UVs are for the PNGs as extracted
     this.texture.wrapS = this.texture.wrapT = THREE.RepeatWrapping;
     this.texture.colorSpace = THREE.SRGBColorSpace;

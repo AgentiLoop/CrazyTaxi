@@ -49,7 +49,7 @@ const renderer = new THREE.WebGLRenderer({ antialias: true, canvas, stencil: tru
 const scene = new THREE.Scene();
 const SKY = 0x7fb2e5;
 scene.background = new THREE.Color(SKY);
-scene.fog = new THREE.Fog(SKY, 5000, 13000);
+scene.fog = new THREE.Fog(SKY, 1200, 9000);   // nearer than 5000: helps hide the traffic's 1800 draw edge
 
 // The Dreamcast's 4:3 picture (nlPerspective: near 3, far 15000) with its vertical view
 // kept and its width the window's: the whole window is the picture, the HUD in its corners.
@@ -309,7 +309,7 @@ async function main() {
     const customers = car.customers();
     const gs = car.gameSystem();
     const rider = car.rider();
-    traffic.update(car.cars);
+    traffic.update(car.cars, camera);
     people.update(car.people);
     if (boxObjects) boxObjects.update(car.objects);
     gameCamera.apply(car.camera());   // camUpdate's view: the traffic was culled with it

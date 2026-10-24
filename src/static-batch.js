@@ -290,6 +290,52 @@ function copyTile(renderer, src, dst, t, scale) {
   copy(0, 0, p, p, x + w, y + h);
 }
 
+// A compressed texture (the release's KTX2s) can't be copied into an RGBA atlas: it is drawn
+// into a render target first, texel for texel (texelFetch: scaled up by repeating texels, as
+// 'pixelated') or filtered (a larger picture drawn smaller, from its mipmaps). The target has
+// the texture's colour space, so the GPU's sRGB decode on reading and encode on writing cancel.
+const _decode = new THREE.Mesh(
+  new THREE.BufferGeometry().setAttribute('position', new THREE.Float32BufferAttribute([-1, -1, 0, 3, -1, 0, -1, 3, 0], 3)),
+  new THREE.ShaderMaterial({
+    glslVersion: THREE.GLSL3,
+    uniforms: { map: { value: null }, size: { value: new THREE.Vector2() }, nearest: { value: true } },
+    vertexShader: 'void main() { gl_Position = vec4(position.xy, 0.0, 1.0); }',
+    fragmentShader: `uniform sampler2D map;
+uniform vec2 size;
+uniform bool nearest;
+void main() {
+  vec2 uv = gl_FragCoord.xy / size;
+  gl_FragColor = nearest ? texelFetch(map, ivec2(uv * vec2(textureSize(map, 0))), 0) : texture(map, uv);
+}`,
+    blending: THREE.NoBlending, depthTest: false, depthWrite: false,
+  }));
+_decode.frustumCulled = false;
+const _decodeCamera = new THREE.Camera();
+
+/** `src` drawn into a new w x h render target (dispose it after use). */
+function decoded(renderer, src, w, h, nearest) {
+  const rt = new THREE.WebGLRenderTarget(w, h, { depthBuffer: false, colorSpace: src.colorSpace });
+  const { uniforms } = _decode.material;
+  uniforms.map.value = src;
+  uniforms.size.value.set(w, h);
+  uniforms.nearest.value = nearest;
+  const before = renderer.getRenderTarget();
+  renderer.setRenderTarget(rt);
+  renderer.render(_decode, _decodeCamera);
+  renderer.setRenderTarget(before);
+  uniforms.map.value = null;
+  src.dispose();   // its GPU copy: the atlas holds the texels now
+  return rt;
+}
+
+/** copyTile from a texture of any kind: a compressed one drawn at the tile's size x scale first. */
+function copyAnyTile(renderer, src, dst, t, scale, nearest) {
+  if (!src.isCompressedTexture) { copyTile(renderer, src, dst, t, scale); return; }
+  const rt = decoded(renderer, src, t.width * scale, t.height * scale, nearest);
+  copyTile(renderer, rt.texture, dst, t, scale);
+  rt.dispose();
+}
+
 /**
  * Fill the atlases on the GPU: each tile's picture and its one-texel ring of wrapped edges,
  * copied from the glTF textures' images (exact: no canvas, so no premultiplied alpha).
@@ -297,7 +343,7 @@ function copyTile(renderer, src, dst, t, scale) {
 function buildAtlases(renderer, tiles, sources, atlasCount, atlasSize) {
   const atlases = [];
   for (let i = 0; i < atlasCount; i++) atlases.push(newAtlas(renderer, atlasSize, atlasSize, false, `static atlas ${i}`));
-  for (const t of tiles) copyTile(renderer, sources.get(t.id), atlases[t.atlas], t, 1);
+  for (const t of tiles) copyAnyTile(renderer, sources.get(t.id), atlases[t.atlas], t, 1, true);
   return atlases;
 }
 
@@ -305,9 +351,9 @@ function buildAtlases(renderer, tiles, sources, atlasCount, atlasSize) {
  * The atlases of a batched world (batchStatic's group.batch) again at `scale` times the size,
  * the same layout (the meshes' tiles and the materials' atlasSize stay in the layout's
  * texels): each tile `imageOf(source)` - a Promise of a picture of any size (the hi-res
- * pack's), drawn at the tile's - or, for null, the game's own texture scaled up. Mipmapped
- * (the shader holds the level of detail within the ring). Resolves to the atlases; swap
- * them in with swapAtlases.
+ * pack's; or a compressed texture, the release's KTX2), drawn at the tile's - or, for null,
+ * the game's own texture scaled up. Mipmapped (the shader holds the level of detail within
+ * the ring). Resolves to the atlases; swap them in with swapAtlases.
  */
 export async function scaledAtlases(renderer, batch, scale, imageOf) {
   const { tiles, sources, atlasCount, atlasSize } = batch;
@@ -315,8 +361,12 @@ export async function scaledAtlases(renderer, batch, scale, imageOf) {
   for (let i = 0; i < atlasCount; i++) atlases.push(newAtlas(renderer, atlasSize * scale, atlasSize, true, `static atlas ${i} x${scale}`));
   const images = tiles.map((t) => imageOf(t.id));   // all asked for at once: the pack's queue orders them
   for (let i = 0; i < tiles.length; i++) {
-    const t = tiles[i], pack = await images[i];
-    const bitmap = await createImageBitmap(pack || sources.get(t.id).image, {
+    const t = tiles[i], pack = await images[i], game = sources.get(t.id);
+    if (pack ? pack.isCompressedTexture : game.isCompressedTexture) {
+      copyAnyTile(renderer, pack || game, atlases[t.atlas], t, scale, !pack);
+      continue;
+    }
+    const bitmap = await createImageBitmap(pack || game.image, {
       resizeWidth: t.width * scale, resizeHeight: t.height * scale, resizeQuality: pack ? 'high' : 'pixelated',
       premultiplyAlpha: 'none', colorSpaceConversion: 'none',
     });

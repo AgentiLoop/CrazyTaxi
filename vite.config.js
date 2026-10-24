@@ -1,10 +1,10 @@
 // Serve the asset release's pre-compressed files (tools/build_asset_release.mjs writes a
-// <name>.br next to every .glb/.json/.BIN/.svg/.wav) with Content-Encoding: br, in dev and in
+// <name>.br next to every .glb/.json/.BIN/.svg/.wav/.ktx2) with Content-Encoding: br, in dev and in
 // preview, whenever the browser accepts Brotli. Anything without a .br is served as before.
 import { existsSync, readFileSync, statSync } from 'node:fs';
 import { join, normalize } from 'node:path';
 
-const TYPES = { glb: 'model/gltf-binary', json: 'application/json', BIN: 'application/octet-stream', svg: 'image/svg+xml', wav: 'audio/wav' };
+const TYPES = { glb: 'model/gltf-binary', json: 'application/json', BIN: 'application/octet-stream', svg: 'image/svg+xml', wav: 'audio/wav', ktx2: 'image/ktx2' };
 
 function brotli(root) {
   return (req, res, next) => {

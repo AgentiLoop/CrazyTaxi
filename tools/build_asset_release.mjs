@@ -10,7 +10,10 @@
 //     compressed), their small WebPs (the traffic cars' paints are baked from those in the
 //     browser), the menu / HUD sprites and destination pictures as the pack has them, and
 //     three's Basis transcoder (basis/) for KTX2Loader.
-//   - brotli: every .glb/.json/.BIN/.svg/.wav gets a <name>.br next to it (quality 11), which
+//   - ktx2: the models' own textures (textures/*.png and the PNGs inside the .glb files) become
+//     KTX2 (Basis Universal ETC1S, tools/ktx2_release.py) under KHR_texture_basisu, with the
+//     transcoder in basis/; run it after copy, which puts the PNG versions back.
+//   - brotli: every .glb/.json/.BIN/.svg/.wav/.ktx2 gets a <name>.br next to it (quality 11), which
 //     vite.config.js's middleware serves with Content-Encoding: br. This is the meshes' shrink:
 //     meshopt without quantizing (the geometry must stay exact) makes the glTF larger once
 //     Brotli'd (BINC1's BIN: 2.13 MB Brotli alone, 3.04 MB meshopt + Brotli), so it is not used.
@@ -108,7 +111,13 @@ async function hiresStage() {
   const { stdout } = await run('python3', [join(ROOT, 'tools/ktx2_texture_pack.py'), '--out', HIGH], { cwd: ROOT, maxBuffer: 1 << 24 });
   process.stdout.write(stdout);
 }
-const BROTLI = /\.(glb|json|BIN|svg|wav)$/;
+
+async function ktx2Stage() {
+  copyTree(join(ROOT, 'node_modules/three/examples/jsm/libs/basis'), join(LOW, 'basis'), (p) => !p.endsWith('.md'));
+  const { stdout } = await run('python3', [join(ROOT, 'tools/ktx2_release.py'), '--release', LOW], { cwd: ROOT, maxBuffer: 1 << 24 });
+  process.stdout.write(stdout);
+}
+const BROTLI = /\.(glb|json|BIN|svg|wav|ktx2)$/;
 
 async function brotliStage() {
   const files = [];
@@ -145,6 +154,7 @@ function size(dir) {
 
 mkdirSync(LOW, { recursive: true });
 if (stage('copy')) copyStage();
+if (stage('ktx2')) await ktx2Stage();
 if (stage('audio')) await audioStage();
 if (stage('hires')) await hiresStage();
 if (stage('brotli')) await brotliStage();
