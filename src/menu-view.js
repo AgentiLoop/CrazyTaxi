@@ -2,10 +2,10 @@
 // src/dc-menu.js) on a 2D canvas: the 640 x 480 screen scaled to the canvas, the
 // sprites and glyphs from local-assets/sprites (texture number -> PNG through the
 // manifest), farther (smaller 1/z) first, each tinted by its vertex colour the way
-// the PowerVR modulates a texture (texture x colour, alpha x alpha). With ?hires=1 a sprite
+// the PowerVR modulates a texture (texture x colour, alpha x alpha). With ?hires=1 (or H) a sprite
 // is drawn from the hi-res texture pack's image once it has loaded (src/scene.js hiresImage);
 // its size and layout stay the game's.
-import { hiresImage } from './scene.js';
+import { HIRES, hiresImage } from './scene.js';
 const SCREEN_W = 640, SCREEN_H = 480;
 // The driver figure's 1/z (SelectView): ~1/33, between the select's art and its text.
 const FIGURE_DEPTH = 1 / 33;
@@ -16,7 +16,7 @@ const LOGO_FIRST = 100, LOGO_LAST = 112;
 // Vector stand-ins for the menu's bitmaps (each falls back to the sprites until it is ready):
 // - the item bars (SPRMENU 23-25 grey, 26-28 white: 8 x 32 left cap / middle / right cap
 //   pieces, a 2 px #ccc rim with ~5 px round corners) -> one SVG rounded rectangle per bar;
-// - pfPutc's glyphs (font textures 0, 118 and 3) -> a line of text in a web font;
+// - pfPutc's glyphs (font textures 0, 118, 3 and 113) -> a line of text in a web font;
 // - the screens' title and help-bar pictures and the title's copyright (keyed by their
 //   textures) -> text in a web font;
 // - the save / load screens' message lines (MESSAGES) -> text in a web font, part by part.
@@ -40,7 +40,7 @@ const PICTURES = new Map([
   // the driver select's name (SPRGAME 399-409: 128 x 128 tiles, black letters on white):
   // as tall as the bitmap's letters, at the font's own width
   ['399,400,401', ['AXEL', NAME]],
-  ['402,403,404', ['B.D.JOE', NAME]],
+  ['402,403,404', ['BDJOE', NAME]],
   ['407,408,409', ['GENA', NAME]],
   ['405,406', ['GUS', NAME]],
 ]);
@@ -96,6 +96,7 @@ const GLYPH_FONTS = new Map([
   [0, { font: '500 "Oswald"', ink: 'alpha' }],                           // the title's PRESS START BUTTON
   [118, { font: '400 "Archivo Black"', ink: 'alpha' }],                  // the menu items (drawn black)
   [3, { font: '400 "Archivo Black"', ink: 'light', stroke: '#000' }],    // white / yellow, outlined
+  [113, { font: '400 "Archivo Black"', ink: 'light', stroke: '#000' }],  // the Crazy Box's TRY AGAIN window (font 2)
 ]);
 
 export class MenuView {
@@ -187,7 +188,8 @@ export class MenuView {
 
   /**
    * Text in a web font, its drawn shape stretched onto `box` (screen units) — or, with
-   * style.keepAspect, as tall as the box at the font's own width, from the box's left.
+   * style.keepAspect, as tall as the box at the font's own width, from the box's left
+   * (or ending at its right when wider than the box).
    */
   text(text, style, box, fill, alpha) {
     const { ctx } = this;
@@ -199,7 +201,9 @@ export class MenuView {
     const bw = m.actualBoundingBoxLeft + m.actualBoundingBoxRight, bh = m.actualBoundingBoxAscent + m.actualBoundingBoxDescent;
     if (!(bw > 0 && bh > 0)) return;
     const sy = (box[3] - box[1]) * k / bh, sx = style.keepAspect ? sy : (box[2] - box[0]) * k / bw;
-    ctx.setTransform(sx, 0, 0, sy, box[0] * k, box[1] * k);
+    // keepAspect text wider than the box ends at the box's right instead of running past it
+    const left = Math.min(box[0] * k, box[2] * k - bw * sx);
+    ctx.setTransform(sx, 0, 0, sy, left, box[1] * k);
     ctx.globalAlpha = Math.min(1, alpha);
     ctx.textBaseline = 'alphabetic';
     ctx.textAlign = 'left';
@@ -317,9 +321,18 @@ export class MenuView {
       im = new Image();
       im.src = this.assets + 'sprites/' + path;
       this.images.set(n, im);
-      im.decode().then(() => hiresImage('sprites/' + path, im)).then((b) => { if (b) this.hires.set(n, b); }, () => {});
     }
     return im.complete && im.naturalWidth ? im : null;
+  }
+
+  /** The pack's image for a loaded sprite while the pack is on (H), else null: asked for once. */
+  hiresOf(n, im) {
+    if (!HIRES) return null;
+    if (!this.hires.has(n)) {
+      this.hires.set(n, null);
+      hiresImage('sprites/' + this.paths.get(n), im).then((b) => { if (b) this.hires.set(n, b); }, () => {});
+    }
+    return this.hires.get(n);
   }
 
   /** The texture multiplied by an RGB colour (alpha kept). */
@@ -428,7 +441,7 @@ export class MenuView {
       }
       ctx.scale(d.uLeft > d.uRight ? -1 : 1, d.vTop > d.vBottom ? -1 : 1);
       ctx.globalAlpha = Math.min(1, d.alpha);
-      const src = this.hires.get(d.texture) || im, fx = src.width / W, fy = src.height / H;
+      const src = this.hiresOf(d.texture, im) || im, fx = src.width / W, fy = src.height / H;
       ctx.imageSmoothingEnabled = src !== im || d.kind === 'glyph' || !!d.filter;   // the pack's: scaled down smoothly
       ctx.drawImage(this.tint(d.texture, src, d.colour), sx * fx, sy * fy, sw * fx, sh * fy, -w / 2, -h / 2, w, h);
     }
