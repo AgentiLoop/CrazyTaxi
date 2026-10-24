@@ -200,6 +200,51 @@ class ExtractVehiclesTest(unittest.TestCase):
             path.write_bytes(binary[view["byteOffset"]:view["byteOffset"] + view["byteLength"]])
             self.assertEqual(em.read_png(path), (2, 1, bytes([255, 255, 0, 255, 200, 100, 50, 255])))
 
+    def test_cab_shadow_table(self):
+        """A tetrahedron shell (3 faces) as one piece; six lists of it, the sixth repeating the fifth."""
+        data = bytearray(0x400)
+        verts, edges, faces, piece = 0x100, 0x130, 0x148, 0x190
+        struct.pack_into("<12f", data, verts, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1)
+        struct.pack_into("<12H", data, edges, 0, 1, 1, 2, 2, 0, 0, 3, 1, 3, 2, 3)
+        for k, (normal, corners, sides) in enumerate((((0, 0, -1), (0, 2, 1), (2, 1, 0)),
+                                                      ((0, -1, 0), (0, 1, 3), (0, 4, 3)),
+                                                      ((-1, 0, 0), (0, 3, 2), (3, 5, 2)))):
+            struct.pack_into("<3f6H", data, faces + 24 * k, *(normal + corners + sides))
+        struct.pack_into("<3I3H", data, piece, LOAD + verts, LOAD + edges, LOAD + faces, 4, 6, 3)
+        struct.pack_into("<2I", data, 0x1C0, LOAD + piece, 0)
+        struct.pack_into("<6I", data, 0x300, *([LOAD + 0x1C0] * 6))
+        table, lists = ev.find_shadow_table(bytes(data))
+        self.assertEqual(table, LOAD + 0x300)
+        self.assertEqual(len(lists), 5)
+        p = lists[0][0]
+        self.assertEqual(p["address"], LOAD + piece)
+        self.assertEqual(p["vertices"][1], [1.0, 0.0, 0.0])
+        self.assertEqual(p["edges"][3], [0, 3])
+        self.assertEqual(p["faces"][1], [0, 1, 3])
+        self.assertEqual(p["face_edges"][2], [3, 5, 2])
+        self.assertEqual(p["normals"][0], [0.0, 0.0, -1.0])
+        struct.pack_into("<H", data, piece + 12, 5)  # vertex count no longer matches the edge pointer
+        self.assertIsNone(ev.shadow_piece(bytes(data), LOAD + piece))
+        with self.assertRaises(ValueError):
+            ev.find_shadow_table(bytes(data))
+
+    def test_put_shadow_and_shadowed_extras(self):
+        blob = bytes(0x100) + quad_model()
+        builder = ev.Builder(None, [], "", blob, BASE0, ("car", "shadow"))
+        builder.put(0, "body", BASE0 + 0x100)
+        builder.put_shadow(1, dict(address=0x0C0968D8, vertices=[[0, 0, 0], [1, 0, 0], [0, 1, 0]], edges=[[0, 1]],
+                                   normals=[[0, 0, 1]], faces=[[0, 1, 2]], face_edges=[[0, 0, 0]]))
+        glb = builder.glb()
+        length = struct.unpack_from("<I", glb, 12)[0]
+        doc = json.loads(glb[20:20 + length])
+        self.assertEqual([s["name"] for s in doc["scenes"]], ["car", "shadow"])
+        self.assertEqual(doc["nodes"][0]["extras"]["shadowed"],
+                         sum(1 for r in parse_model(blob, 0x100)["records"] if r["pcw"] & ev.PCW_SHADOW))
+        node = doc["nodes"][1]
+        self.assertEqual(node["name"], "shadow_0c0968d8")
+        self.assertEqual(node["extras"]["edges"], [[0, 1]])
+        self.assertNotIn("material", doc["meshes"][node["mesh"]]["primitives"][0])
+
 
 if __name__ == "__main__":
     unittest.main()
