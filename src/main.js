@@ -22,6 +22,7 @@ import { GameAudio } from './audio.js';
 import { MenuView } from './menu-view.js';
 import { loadSave, storeSave, PAD } from './dc-menu.js';
 import { BoxObjects } from './box-objects.js';
+import { createTAA } from './taa.js';
 
 // The asset folder: local-assets/, or the asset release's (VITE_ASSETS=... at build or dev time).
 const ASSETS = (import.meta.env && import.meta.env.VITE_ASSETS) || 'local-assets/';
@@ -48,6 +49,7 @@ const canvas = document.getElementById('view');
 // models lay opaque panels (windows, signs) ~0.01 over their walls; a 24-bit z (near 3) loses
 // that gap past a few hundred units and they flicker, a log depth keeps it out to the far plane
 const renderer = new THREE.WebGLRenderer({ antialias: true, canvas, stencil: true, logarithmicDepthBuffer: true });
+const taa = params.get('taa') !== '0' ? createTAA(renderer) : null;   // the far edges' crawl (src/taa.js); ?taa=0 MSAA only
 
 const scene = new THREE.Scene();
 const SKY = 0x7fb2e5;
@@ -320,7 +322,7 @@ async function main() {
     marks.update(car, customers, camera, renderer);
     // The Crazy Box: only while the game draws its own (some games carry fares without it).
     navArrow.update(camera, d.pos, gs.aboard && rider && rider.phase === 2 && (!CRAZY || car.navDrawn) ? stops[rider.stop].centre : null);
-    renderer.render(scene, camera);
+    if (taa) taa.render(scene, camera); else renderer.render(scene, camera);
     if (boxView) {
       // The game's 640 x 480 screen is the 4:3 middle of the window (the vertical view is the game's).
       const h = Math.round(innerHeight * Math.min(devicePixelRatio, 2)), w = Math.round(h * 4 / 3);
@@ -340,7 +342,7 @@ async function main() {
   // For tests and probes.
   window.__game = {
     car, scene, camera, gameCamera, renderer, cityName, wheelRadius: WHEEL_RADIUS, stops,
-    people, traffic, cabShadow, navArrow, marks, restart, audio, boxObjects, batched,
+    people, traffic, cabShadow, navArrow, marks, restart, audio, boxObjects, batched, taa,
   };
 }
 

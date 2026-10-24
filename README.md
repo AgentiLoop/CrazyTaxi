@@ -30,6 +30,8 @@ The world (city and set objects) is merged into a few draw calls at load
 where it was 40-47. `?batch=0` draws the single meshes again. The hi-res pack (`?hires=1`,
 or H in game) draws the same batches from atlases four times the size with the pack's
 pictures in the tiles (a 64 x 64 game texture is the pack at 256; 8192 x 8192, mipmapped).
+Edges are anti-aliased over time as well as by 4x MSAA (`src/taa.js`: jittered frames
+blended into a reprojected history), so the far city doesn't crawl; `?taa=0` is MSAA only.
 
 Keys: arrows / WASD drive and steer, X = Drive gear (B), Z = Reverse gear (A),
 R restart. Xbox controller (any standard-layout pad): left stick / D-pad steer, A (or RT)
