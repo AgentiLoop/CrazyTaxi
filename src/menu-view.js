@@ -19,6 +19,7 @@ const LOGO_FIRST = 100, LOGO_LAST = 112;
 // - pfPutc's glyphs (font textures 0, 118, 3 and 113) -> a line of text in a web font;
 // - the screens' title and help-bar pictures and the title's copyright (keyed by their
 //   textures) -> text in a web font;
+// - the Crazy Box's labels, banners and big digits (SPRBOX, SPRCOMM 80-92, 114-116) -> text in a web font;
 // - the save / load screens' message lines (MESSAGES) -> text in a web font, part by part.
 // Every text is fitted to the ink box of the pixels it replaces, so the layout stays the game's.
 const BAR_PIECES = new Map([[653, '#888'], [654, '#888'], [655, '#888'], [656, '#fff'], [657, '#fff'], [658, '#fff']]);
@@ -26,6 +27,8 @@ export const FONTS = ['100px "Anton"', '100px "Archivo Black"', '700 100px "Robo
 const TITLE = { font: '400 "Anton"', ink: 'dark', fill: '#000' };
 const HELP = { font: '700 "Roboto Condensed"', ink: 'light', fill: '#fff', stroke: '#000' };
 const NAME = { ...TITLE, keepAspect: true };
+const BOX_LABEL = { font: '400 "Archivo Black"', ink: 'light', fill: '#fff', stroke: '#000', rim: 1.75 };
+const BANNER = { font: '400 "Anton"', ink: 'light', fill: '#fff', stroke: '#000', rim: 2 };
 const PICTURES = new Map([
   ['221,221,221,221', ['\u00A9 SEGA ENTERPRISES, LTD., 1999,2000', { font: '400 "Anton"', ink: 'alpha', fill: '#800' }]],
   ['645,646,647', ['MODE SELECTION', TITLE]],
@@ -43,8 +46,24 @@ const PICTURES = new Map([
   ['402,403,404', ['BDJOE', NAME]],
   ['407,408,409', ['GENA', NAME]],
   ['405,406', ['GUS', NAME]],
+  // the Crazy Box games' labels (SPRBOX 532-551: white letters, black rim, tinted by the game)
+  ['537,538', ['K point', BOX_LABEL]],
+  ['532', ['150m', BOX_LABEL]],
+  ['551', ['your leap', BOX_LABEL]],
+  ['540,541', ['pins', BOX_LABEL]],
+  ['542,543', ['remaining balloons', BOX_LABEL]],
+  ['544,545', ['remaining customers', BOX_LABEL]],
+  ['536', ['get', BOX_LABEL]],
+  ['533,534', ['combo', BOX_LABEL]],
+  // the Crazy Box's banners (SPRCOMM 114-116: block capitals, white, black rim)
+  ['114', ['CLEARED', BANNER]],
+  ['115', ['FAILED', BANNER]],
+  ['116', ['NEW RECORD', BANNER]],
 ]);
 const PICTURE_TEXTURES = new Set([...PICTURES.keys()].flatMap((k) => k.split(',').map(Number)));
+// SPRCOMM's big digits (80-89), ' (90), $ (91) and . (92): each a character fitted to its own ink.
+const DIGIT = { font: '400 "Archivo Black"', ink: 'light', fill: '#fff', stroke: '#000', rim: 2.25 };
+const DIGITS = new Map([...'0123456789\'$.'].map((c, i) => [80 + i, c]));
 // The save / load screens' message lines (SPRMENG 935-972, SPRCENG 191-193: one 16 px high line
 // each). '|' splits the parts around a gap the game fills itself (the slot 'A 1', a name).
 const MESSAGE = { font: '400 "Archivo Black"', ink: 'light', stroke: '#000' };
@@ -210,7 +229,7 @@ export class MenuView {
     const x = m.actualBoundingBoxLeft, y = m.actualBoundingBoxAscent;
     if (style.stroke) {
       ctx.lineJoin = 'round';
-      ctx.lineWidth = 2.5 * k / sy;        // ~1.25 screen px outside the letters
+      ctx.lineWidth = 2 * (style.rim ?? 1.25) * k / sy;   // style.rim (~1.25) screen px outside the letters
       ctx.strokeStyle = style.stroke;
       ctx.strokeText(text, x, y);
     }
@@ -294,6 +313,12 @@ export class MenuView {
         const b = boxes[j];
         this.text(text, MESSAGE, [p.x + b[0] * p.w, p.y + b[1] * p.h, p.x + b[2] * p.w, p.y + b[3] * p.h], fill, d.alpha);
       });
+      return 1;
+    }
+    if (d.kind === 'sprite' && DIGITS.has(d.texture)) {
+      const box = this.inkBox(run, DIGIT.ink);
+      if (!box) return 0;
+      if (d.alpha > 0) this.text(DIGITS.get(d.texture), DIGIT, box, colour(DIGIT.fill), d.alpha);
       return 1;
     }
     if (d.kind === 'sprite' && PICTURE_TEXTURES.has(d.texture)) {
