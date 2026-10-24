@@ -303,9 +303,10 @@ const _decode = new THREE.Mesh(
     fragmentShader: `uniform sampler2D map;
 uniform vec2 size;
 uniform bool nearest;
+layout(location = 0) out highp vec4 colour;
 void main() {
   vec2 uv = gl_FragCoord.xy / size;
-  gl_FragColor = nearest ? texelFetch(map, ivec2(uv * vec2(textureSize(map, 0))), 0) : texture(map, uv);
+  colour = nearest ? texelFetch(map, ivec2(uv * vec2(textureSize(map, 0))), 0) : texture(map, uv);
 }`,
     blending: THREE.NoBlending, depthTest: false, depthWrite: false,
   }));
