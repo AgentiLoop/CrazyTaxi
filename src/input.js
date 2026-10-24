@@ -72,16 +72,18 @@ export class Input {
   }
 
   /**
-   * Xbox pad in the cab: left stick (or D-pad) steers, RT accelerates, LT brakes (analog;
-   * D-pad up / down digital), B or RB Drive gear, A or LB Reverse gear, Menu (≡) pause,
-   * View reset, Y the hi-res pack (H). Returns null with no pad.
+   * Xbox pad in the cab: left stick (or D-pad) steers, A (or RT) gas, B (or LT) brake
+   * (triggers analog; D-pad up / down digital), RB or right stick forward Drive gear,
+   * LB or right stick back Reverse gear, Menu (≡) pause, View reset, Y the hi-res pack (H).
+   * Returns null with no pad.
    */
   readPad() {
     const p = gamepad();
     if (!p) return null;
     const now = new Set();
-    if (held(p, BTN.B) || held(p, BTN.RB)) now.add('drive');
-    if (held(p, BTN.A) || held(p, BTN.LB)) now.add('reverse');
+    const ry = p.axes[3] ?? 0;
+    if (held(p, BTN.RB) || ry < -0.5) now.add('drive');
+    if (held(p, BTN.LB) || ry > 0.5) now.add('reverse');
     if (held(p, BTN.MENU)) now.add('pause');
     if (held(p, BTN.VIEW)) now.add('reset');
     if (held(p, BTN.Y)) now.add('hires');
@@ -91,8 +93,8 @@ export class Input {
     return {
       steer: dpad || axis(p.axes[0]),
       analog: !dpad,
-      accel: Math.max(value(p, BTN.RT), held(p, BTN.UP) ? 1 : 0),
-      brake: Math.max(value(p, BTN.LT), held(p, BTN.DOWN) ? 1 : 0),
+      accel: Math.max(value(p, BTN.RT), held(p, BTN.A) || held(p, BTN.UP) ? 1 : 0),
+      brake: Math.max(value(p, BTN.LT), held(p, BTN.B) || held(p, BTN.DOWN) ? 1 : 0),
       now, pressed,
     };
   }
