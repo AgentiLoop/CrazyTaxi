@@ -227,6 +227,31 @@ test('the navigation arrow is the game\'s call: game 5 draws it with a fare aboa
   }
 });
 
+test('game 10\'s figure by the pole (FcvPlay): character 36, posed by FcvStoreBuffer, standing in place and turning to the cab', { skip: !have }, () => {
+  const car = make(10);
+  const figure = () => car.people.filter((p) => p.kind === 'fcv' && p.chara === 36);
+  const facing = [];
+  for (let n = 0; n < 700; n++) {
+    car.update(n > 190 ? { ...IDLE, accel: 1, steer: Math.sin(n / 90) * 0.3 } : IDLE);
+    const f = figure();
+    assert.equal(f.length, 1, `frame ${n}: one figure`);
+    const m = f[0].matrix;
+    assert.deepEqual([m[12], m[14]].map(Math.round), [1305, 8709], 'at the pole');
+    facing.push(Math.atan2(m[8], m[10]));
+  }
+  const { buffer } = figure()[0];
+  assert.equal(buffer.length, 17);
+  assert.ok(buffer.flat().every(Number.isFinite));
+  assert.ok(buffer[0][1] > 10 && buffer[0][1] < 11.5, `the head over the root (${buffer[0][1]})`);
+  assert.ok(Math.abs(facing.at(-1) - facing[0]) > 0.05, `turns as the cab moves (${facing[0].toFixed(3)} -> ${facing.at(-1).toFixed(3)})`);
+  for (const g of [4, 5, 9, 14]) {
+    const other = make(g);
+    for (let n = 0; n < 200; n++) other.update(IDLE);
+    assert.ok(other.people.every((p) => p.chara !== 36 || p.kind !== 'fcv'), `game ${g}: no FcvPlay figure`);
+  }
+});
+
+
 test('a clear is filed in the records (CheckRanking); the save opens 1-4 in the menu once 1-1 to 1-3 are cleared', { skip: !have }, () => {
   const START_EXCELLENT = 0x0C05ABE8;   // what each game calls when it is cleared
   let save = null;

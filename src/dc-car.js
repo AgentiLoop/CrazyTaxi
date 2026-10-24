@@ -203,6 +203,11 @@ const FN = {
   // Some Crazy Box games carry fares without it (4, 10, 11, 12, 15; 9 and 13 show ExecArrow's
   // green arrow instead at times): `navDrawn`, whether the game drew it this frame.
   navArrowPut: 0x0C0266F8,
+  // FcvPlay(motion, character, frame): a figure played straight from a key-curve motion, not
+  // from a pose buffer - Exec_DCmini_Game9's in game 10, the figure by the pole that turns to
+  // face the cab (Put_PoleMarriageKiss plays the kiss once character 33 is delivered). FcvStoreBuffer
+  // (motion, buffer, frame) makes the pose buffer FcvPlayBuffer takes.
+  fcvPlay: 0x0C065008, fcvStoreBuffer: 0x0C065BB0,
   entryCarPut: 0x0C043BA2, trafficControl: 0x0C041ACC, executeEvent: 0x0C0296B6, execColliObj: 0x0C031EE4,
   putCarModel: 0x0C0434D0, putTrainModel: 0x0C0437FE,
   putPlayerCar: 0x0C0203E8, putPlayerCarByView: 0x0C0200E4,
@@ -252,6 +257,19 @@ const STUBS = [
   // Put_ReadySetGo (0x0C05ACCC) runs in the Crazy Box (FN.putReadySetGo).
   0x0C0521C8, 0x0C0526B8, 0x0C052316, 0x0C0523B2, 0x0C052716, 0x0C052678, 0x0C05273E, 0x0C05296C, 0x0C05ACCC,
 ];
+
+// A scratch pose buffer for FcvStoreBuffer (0xCC bytes), clear of the stack the calls run on.
+const FCV_SCRATCH = 0x0CFBF000;
+
+/** An Fcv pose buffer (FcvStoreBuffer's, FcvPlayBuffer's): 5 positions (floats), 12 angles (ints). */
+function fcvBuffer(cpu, b) {
+  const buffer = new Array(17);
+  for (let i = 0; i < 17; i++) {
+    const a = b + 12 * i;
+    buffer[i] = i < 5 ? [cpu.rf(a), cpu.rf(a + 4), cpu.rf(a + 8)] : [cpu.rs32(a), cpu.rs32(a + 4), cpu.rs32(a + 8)];
+  }
+  return buffer;
+}
 
 const STEER_RATE = 5;   // keyboard only: the stick value moves this much per second
 
@@ -326,7 +344,11 @@ export class DreamcastCar {
         }
         return false;
       });
+      // FcvPlay's figure: kept, and posed after the frame (a hook cannot call the game; see update()).
+      cpu.hooks.set(FN.fcvPlay, (c) => { this.fcvPlays.push({ motion: c.r[4] >>> 0, chara: c.r[5], frame: c.f(4), matrix: xmtrx(c) }); return 0; });
     }
+    /** @type {object[]} the Crazy Box: FcvPlay's figures this frame (motion, character, frame, matrix) */
+    this.fcvPlays = [];
     /** @type {object[]} the Crazy Box: the models its games drew this frame (see FN.objPutTrnsl) */
     this.objects = [];
     // getNearLineIndexAll runs only from carGroundCheck's out-of-world recovery here: count it, then let it run.
@@ -366,12 +388,7 @@ export class DreamcastCar {
       return 0;
     });
     cpu.hooks.set(FN.fcvPlayBuffer, (c) => {
-      const b = c.r[4] >>> 0, buffer = new Array(17);
-      for (let i = 0; i < 17; i++) {
-        const a = b + 12 * i;
-        buffer[i] = i < 5 ? [c.rf(a), c.rf(a + 4), c.rf(a + 8)] : [c.rs32(a), c.rs32(a + 4), c.rs32(a + 8)];
-      }
-      this.people.push({ kind: 'fcv', chara: c.r[5], buffer, matrix: xmtrx(c) });
+      this.people.push({ kind: 'fcv', chara: c.r[5], buffer: fcvBuffer(c, c.r[4] >>> 0), matrix: xmtrx(c) });
       return 0;
     });
     // The sound (src/audio.js plays it through `audio`; the lists are kept for tests).
@@ -680,6 +697,13 @@ export class DreamcastCar {
     this.call(FN.execColliObj);
     this.call(FN.voiceExecute);   // the system tick after the game's frame: the voice channels' scripts
     cpu.w32(G.frameCounter, (cpu.r32(G.frameCounter) + 1) >>> 0);   // the main loop counts the frame (0x0C1EC050)
+    // FcvPlay's figures, posed as it poses them: FcvStoreBuffer(motion, buffer, frame) into a
+    // scratch buffer below the stack.
+    for (const f of this.fcvPlays) {
+      this.call(FN.fcvStoreBuffer, { r4: f.motion, r5: FCV_SCRATCH, fr4: f.frame });
+      this.people.push({ kind: 'fcv', chara: f.chara, buffer: fcvBuffer(cpu, FCV_SCRATCH), matrix: f.matrix });
+    }
+    this.fcvPlays = [];
     // What the game system recorded this frame.
     const aboard = cpu.r32(g + 4), delivered = cpu.r32(g + 0x14);
     if (aboard && !before.aboard) {
