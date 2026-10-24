@@ -5,6 +5,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { existsSync, readFileSync } from 'node:fs';
 import { DreamcastCar, CRAZY_BOX, carFiles, courseModeOf } from '../src/dc-car.js';
+import { modelFile } from '../src/box-objects.js';
 
 const ROOT = new URL('../local-assets/', import.meta.url);
 const have = existsSync(new URL('disc/COLDC3.BIN', ROOT));
@@ -88,3 +89,61 @@ test('the overlay is the game\'s sprites: READY / GO, the jump distance, FAULT',
   assert.ok(seen(115), 'FAULT (Start_Fault, SPRCOMM 115)');
   for (const s of car.sprites) assert.ok(Number.isFinite(s.x) && Number.isFinite(s.y) && s.x >= 0 && s.x <= 640 && s.y >= 0 && s.y <= 480, `on screen: ${s.texture} ${s.x},${s.y}`);
 });
+
+test('each game draws its own BINC3 entries (gdc_CourseStartLoadReq); 7 and 11 share a course', { skip: !have }, () => {
+  const all = new Set();
+  const of = {};
+  for (let g = 0; g < 15; g++) {
+    of[g] = make(g).courseEntries();
+    assert.ok(of[g].length > 0 && of[g].every((n) => n >= 0 && n < 130), `game ${g}`);
+    for (const n of of[g]) all.add(n);
+  }
+  assert.deepEqual(of[2], [81, 82, 83, 84, 85], 'Crazy Balloons: the 2 km field round the origin');
+  assert.deepEqual(of[7], of[11]);
+  assert.equal(all.size, 130, 'every entry belongs to a game');
+});
+
+test('the model files: POLDC0 at 0x0C390000, the city\'s POLDC at 0x0C5E0000', () => {
+  assert.equal(modelFile(0x0C46F828, 2), 'models/POLDC0/0df828.glb');
+  assert.equal(modelFile(0x0C5E1998, 2), 'models/POLDC3/001998.glb');
+});
+
+test('Crazy Balloons: the 20 balloons are drawn; driving into one pops it and counts down', { skip: !have }, () => {
+  const BALLOON = 0x0C46F828, HIT = 0x0C5E1998;
+  const car = make(2);
+  car.update(IDLE);
+  const balloons = car.objects.filter((o) => o.model === BALLOON);
+  assert.equal(balloons.length, 20);
+  assert.equal(new Set(balloons.map((o) => o.colour.join())).size, 10, 'ten colours');
+  for (const o of balloons) {
+    assert.ok(Math.abs(o.alpha - 0.8) < 1e-6, 'see-through 0.8');
+    assert.ok(Math.abs(o.matrix[0] - 2.4) < 1e-4 && o.matrix[13] > 5 && o.matrix[13] < 20, 'scale 2.4, bouncing on the ground (radius 12)');
+  }
+  // The count (tens, ones: SPRCOMM digits 80-89 at 474 / 498, 90) starts at 20.
+  const count = () => {
+    const d = car.sprites.filter((s) => s.texture >= 80 && s.texture <= 89 && Math.abs(s.y - 90) < 1 && s.x < 510);
+    return d.reduce((v, s) => v * 10 + s.texture - 80, 0);
+  };
+  assert.equal(count(), 20);
+  let hit = false, n = 1;
+  while (!hit && n < 1800) {
+    let input = IDLE;
+    if (n > 190) {
+      let best = null, bd = Infinity;
+      for (const o of car.objects) {
+        if (o.model !== BALLOON) continue;
+        const d = Math.hypot(o.matrix[12] - car.pos.x, o.matrix[14] - car.pos.z);
+        if (d < bd) { bd = d; best = o; }
+      }
+      const e = Math.atan2(best.matrix[12] - car.pos.x, best.matrix[14] - car.pos.z) - car.heading;
+      input = { ...IDLE, accel: 0.7, steer: Math.max(-1, Math.min(1, -Math.atan2(Math.sin(e), Math.cos(e)) * 3)) };
+    }
+    car.update(input);
+    hit = car.objects.some((o) => o.model === HIT);
+    n++;
+  }
+  assert.ok(hit, 'a balloon was hit (drawn 4.8 times, POLDC3 0x1998)');
+  car.update(IDLE);
+  assert.equal(count(), 19);
+});
+

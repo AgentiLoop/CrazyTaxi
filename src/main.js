@@ -18,6 +18,7 @@ import { CabShadow } from './cab-shadow.js';
 import { NavArrow } from './nav-arrow.js';
 import { GameAudio } from './audio.js';
 import { MenuView } from './menu-view.js';
+import { BoxObjects } from './box-objects.js';
 
 const ASSETS = 'local-assets/';
 const params = new URLSearchParams(location.search);
@@ -138,6 +139,16 @@ async function main() {
 
   car = new DreamcastCar(data, { city: GAME_NO, miniGame: MINI_GAME, cab: CAB, rules: RULES, audio });
   car.aspect = camera.aspect;
+  // The Crazy Box course (BINC3) holds every game's pieces in the same space: show this game's
+  // (car.courseEntries(), the ones gdc_CourseStartLoadReq loads).
+  const entries = car.courseEntries();
+  if (entries) {
+    const keep = new Set(entries.map((n) => `entry_${String(n).padStart(3, '0')}`));
+    cityGltf.scene.traverse((o) => { if (/^entry_\d{3}$/.test(o.name)) o.visible = keep.has(o.name); });
+    // Its set objects too: OBJDC3's groups list the games that open them (tools/extract_props.py).
+    const run = `Crazy Box MiniGame_No ${MINI_GAME}`;
+    propsGltf.scene.traverse((o) => { if (o.userData.runs) o.visible = o.userData.runs.includes(run); });
+  }
   // Browsers play nothing before a gesture: the first key or click starts the sound
   // (a song cued during the countdown picks up where it would be).
   for (const ev of ['keydown', 'pointerdown']) addEventListener(ev, () => audio.start(), { once: true });
@@ -145,12 +156,14 @@ async function main() {
   const input = new Input();
   const traffic = new TrafficView(scene, ASSETS, vehicleManifest);
   const navArrow = new NavArrow(scene, ASSETS);   // the game's arrow model, in front of the camera, to the destination
+  const boxObjects = CRAZY ? new BoxObjects(scene, ASSETS, COURSE_MODE) : null;   // the Crazy Box games' own models (the balloons)
   const style = document.createElement('style');
   style.textContent = HUD_CSS;
   // The Crazy Box draws its own overlay (below): no money board (Put_Pass_Time is skipped there)
-  // or countdown text of the HUD's, and no clock in the games without customers (0-3), which
-  // draw their own counts.
-  if (CRAZY) style.textContent += `#hud-board, #hud-big${car.kyaku ? '' : ', #hud-time'} { display: none !important; }`;
+  // or countdown text of the HUD's, and no clock in Crazy Jump (game 0), whose time never
+  // runs (it draws its own distance); the others' time runs out in a fault (reason 1) and
+  // they draw no timer of their own.
+  if (CRAZY) style.textContent += `#hud-board, #hud-big${MINI_GAME === 0 ? ', #hud-time' : ''} { display: none !important; }`;
   document.head.append(style);
   const hud = new Hud(hudRoot, ASSETS, digits);
 
@@ -257,6 +270,7 @@ async function main() {
     const rider = car.rider();
     traffic.update(car.cars);
     people.update(car.people, customers, stops);
+    if (boxObjects) boxObjects.update(car.objects);
     gameCamera.apply(car.camera());   // camUpdate's view: the traffic was culled with it
     navArrow.update(camera, d.pos, gs.aboard && rider && rider.phase === 2 ? stops[rider.stop].centre : null);
     renderer.render(scene, camera);
@@ -279,7 +293,7 @@ async function main() {
   // For tests and probes.
   window.__game = {
     car, scene, camera, gameCamera, renderer, cityName, wheelRadius: WHEEL_RADIUS, stops,
-    people, traffic, cabShadow, navArrow, restart, audio,
+    people, traffic, cabShadow, navArrow, restart, audio, boxObjects,
   };
 }
 

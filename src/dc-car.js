@@ -129,6 +129,9 @@ const G = {
   eventList: 0x0C177748,              // nlInitEvent's list: head, tail; an event: +4 prev, +8 next, +0xC function
   stopTable: 0x0C177270,              // kyakuInitStops' stop entries (24 bytes: stop, centre, +0x14 drop radius; entry 1 + stop)
   landmarkPicture: 0x0C0E37DC,        // the destination's landmark picture (PutLandmark draws it)
+  // gdc_CourseStartLoadReq in the Crazy Box: the first course by MiniGame_No, a pointer to the
+  // counts; the CourseMode 2 table of AFS entries by course (130; the decomp's EU 0x0C08D21C).
+  boxCourseFirst: 0x0C0C71BC, boxCourseCount: 0x0C1231F0, boxCourseEntries: 0x0C08C7D4,
 };
 // The nl library's matrix stack: 16 (+1) matrices at 0x0C1BF7B8, as the game's start-up
 // passes them to the init routine, which fills the slot descriptors at 0x0C2B067C
@@ -162,6 +165,10 @@ const FN = {
   // READY / GO countdown and its two voices, stubbed in the other modes) all end in
   // nlSprPut(record), which is kept as `sprites` (readSprite, the menu's) for MenuView.
   sprPut: 0x0C07D018, putReadySetGo: 0x0C05ACCC,
+  // The Crazy Box's own 3D objects: nlObjPutUseViewMatrixTrnsl(model, alpha) (Crazy Balloons'
+  // Exec_Balloon: its 20 balloons, POLDC0 0xDF828, 2.4 times; 4.8 times POLDC3 0x1998 once
+  // hit), drawn in XMTRX with the fade colour nlObjPutSetFadeColorBase sets (0x0C148678).
+  objPutTrnsl: 0x0C079030, fadeColourBase: 0x0C148678,
   entryCarPut: 0x0C043BA2, trafficControl: 0x0C041ACC, executeEvent: 0x0C0296B6, execColliObj: 0x0C031EE4,
   putCarModel: 0x0C0434D0, putTrainModel: 0x0C0437FE,
   putPlayerCar: 0x0C0203E8, putPlayerCarByView: 0x0C0200E4,
@@ -258,7 +265,16 @@ export class DreamcastCar {
     if (opts.city === CRAZY_BOX) {
       cpu.hooks.delete(FN.putReadySetGo);
       cpu.hooks.set(FN.sprPut, (c) => { this.sprites.push(readSprite(c, c.r[4] >>> 0)); return 0; });
+      cpu.hooks.set(FN.objPutTrnsl, (c) => {
+        const matrix = new Float32Array(16);
+        for (let i = 0; i < 16; i++) matrix[i] = c.xf(i);
+        const colour = [0, 1, 2].map((i) => c.rf(FN.fadeColourBase + i * 4));
+        this.objects.push({ model: c.r[4] >>> 0, matrix, colour, alpha: c.f(4) });
+        return 0;
+      });
     }
+    /** @type {object[]} the Crazy Box: the models its games drew this frame (see FN.objPutTrnsl) */
+    this.objects = [];
     // getNearLineIndexAll runs only from carGroundCheck's out-of-world recovery here: count it, then let it run.
     cpu.hooks.set(0x0C048ED2, () => { this.recoveries++; return false; });
     // SetNewClippingAngle(fov): the clipping half angle the traffic (CheckClippingProject3D)
@@ -544,6 +560,7 @@ export class DreamcastCar {
     const cpu = this.cpu, g = G.gs;
     this.events = [];
     this.sprites = [];
+    this.objects = [];
     this.sounds = [];
     this.voices = [];
     this.musicCue = false;
@@ -613,6 +630,21 @@ export class DreamcastCar {
 
   /** Whether the customers run: everywhere but the Crazy Box's games 0-3 (gameState0, gameStateDrive). */
   get kyaku() { return this.courseMode !== CRAZY_BOX || this.miniGame > 3; }
+
+  /**
+   * The Crazy Box course's BINC3 entries this game loads (gdc_CourseStartLoadReq: the courses
+   * first[MiniGame_No] .. + count[MiniGame_No], each the AFS entry gdc_CourseReq reads from the
+   * CourseMode 2 table), or null outside the Crazy Box course (game 15 is in the Arcade city).
+   * BINC3 holds every game's pieces in the same space; only these are drawn.
+   */
+  courseEntries() {
+    if (this.courseMode !== CRAZY_BOX) return null;
+    const cpu = this.cpu, first = cpu.r32(G.boxCourseFirst + 4 * this.miniGame);
+    const count = cpu.r32(cpu.r32(G.boxCourseCount) + 4 * this.miniGame);
+    const out = [];
+    for (let i = first; i < first + count; i++) out.push(cpu.r32(G.boxCourseEntries + 4 * i));
+    return out;
+  }
 
   /**
    * The Crazy Box game's state (USA addresses of the decomp's 0x0C2A992C etc.): flags (0x20 Start_Fault,
