@@ -4,12 +4,17 @@
 //   - audio: the songs and voices (SONG01/VOICE01, ~150 MB of WAV) become Opus (.ogg) and
 //     AAC (.m4a, for browsers without Ogg Opus); their manifest records get `opus` / `aac`.
 //     The sound-effect samples stay WAV: their loops are a few hundred samples long.
+//   - brotli: every .glb/.json/.BIN/.svg/.wav gets a <name>.br next to it (quality 11), which
+//     vite.config.js's middleware serves with Content-Encoding: br. This is the meshes' shrink:
+//     meshopt without quantizing (the geometry must stay exact) makes the glTF larger once
+//     Brotli'd (BINC1's BIN: 2.13 MB Brotli alone, 3.04 MB meshopt + Brotli), so it is not used.
 // Usage: node tools/build_asset_release.mjs [--only audio,...]
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join, relative } from 'node:path';
 import { cpus } from 'node:os';
+import { brotliCompress, constants } from 'node:zlib';
 
 const run = promisify(execFile);
 const ROOT = join(dirname(new URL(import.meta.url).pathname), '..');
@@ -79,6 +84,30 @@ async function audioStage() {
   console.log(`audio: ${jobs.length} streams -> Opus + AAC`);
 }
 
+const BROTLI = /\.(glb|json|BIN|svg|wav)$/;
+
+async function brotliStage() {
+  const files = [];
+  const walk = (d) => {
+    for (const n of readdirSync(d)) {
+      const p = join(d, n);
+      if (statSync(p).isDirectory()) walk(p);
+      else if (BROTLI.test(n)) files.push(p);
+    }
+  };
+  walk(LOW);
+  const squeeze = promisify(brotliCompress);
+  let raw = 0, packed = 0;
+  await pool(files, async (f) => {
+    const data = readFileSync(f);
+    const br = await squeeze(data, { params: { [constants.BROTLI_PARAM_QUALITY]: 11, [constants.BROTLI_PARAM_SIZE_HINT]: data.length } });
+    writeFileSync(f + '.br', br);
+    raw += data.length;
+    packed += br.length;
+  });
+  console.log(`brotli: ${files.length} files, ${(raw / 1e6).toFixed(1)} -> ${(packed / 1e6).toFixed(1)} MB over the wire`);
+}
+
 function size(dir) {
   if (!existsSync(dir)) return 0;
   let n = 0;
@@ -92,6 +121,7 @@ function size(dir) {
 mkdirSync(LOW, { recursive: true });
 if (stage('copy')) copyStage();
 if (stage('audio')) await audioStage();
+if (stage('brotli')) await brotliStage();
 for (const d of readdirSync(OUT)) {
   if (statSync(join(OUT, d)).isDirectory() && !d.startsWith('.')) console.log(`${relative(ROOT, join(OUT, d))}: ${(size(join(OUT, d)) / 1e6).toFixed(1)} MB`);
 }
