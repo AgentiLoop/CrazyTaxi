@@ -12,7 +12,7 @@
 // keeps its 4:3 look in the corners of a wider window.
 import { formatMoney } from './dc-car.js';
 import { DIGITS_CSS, gameTimeText } from './cartoon-digits.js';
-import { hiresLink } from './scene.js';
+import { HIRES, hiresLink } from './scene.js';
 
 export const RATING_NAMES = ['NORMAL', 'FAST', 'SPEEDY'];
 const LANDMARK_DIR = { 'LANDDC1.AFS': 'landmarks/LANDDC1/', 'LANDDC2.AFS': 'landmarks/LANDDC2/' };
@@ -43,14 +43,36 @@ export class Hud {
     this.cardTimer = 0;
     this.goTimer = 0;
     // The D / R gear box (Put_GearBox: SPRCOMM sprites 17 and 18 centred at 582, 420), the
-    // pack's picture under ?hires=1 (the extracted PNGs are upside down: CSS flips them).
+    // pack's picture while the pack is on (?hires=1 or H; the extracted PNGs are upside down: CSS flips them).
     this.gearSrc = GEAR_SPRITES.map((png) => assets + png);
     this.gear = -1;
+    this.landmarkPng = null;
+    this.hiresShown = 0;
+    if (HIRES) this.showHires();
+  }
+
+  /** The gear box and the destination picture from the pack (HIRES on) or the game's PNGs. */
+  showHires() {
+    this.hiresShown = HIRES;
+    this.gearSrc = GEAR_SPRITES.map((png) => this.assets + png);
+    this.el.gear.classList.remove('pack');
+    this.gear = -1;
     Promise.all(GEAR_SPRITES.map(hiresLink)).then((urls) => {
-      if (!urls.every(Boolean)) return;
+      if (!urls.every(Boolean) || !HIRES) return;
       this.gearSrc = urls;
       this.el.gear.classList.add('pack');
       this.gear = -1;
+    });
+    if (this.landmarkPng) this.showLandmark(this.landmarkPng);
+  }
+
+  showLandmark(png) {
+    const img = this.el.landmark;
+    this.landmarkPng = png;
+    img.src = this.assets + png;
+    img.classList.remove('pack');
+    hiresLink(png).then((url) => {   // the texture pack's picture, if it has one
+      if (url && HIRES && this.landmarkPng === png) { img.src = url; img.classList.add('pack'); }
     });
   }
 
@@ -68,18 +90,14 @@ export class Hud {
     setDrums(e.cash, formatMoney(gs.cash));
     setDrums(e.fare, formatMoney(gs.fare));
     const gear = car.gear === 0 ? 0 : 1;
+    if (this.hiresShown !== HIRES) this.showHires();
     if (gear !== this.gear) { this.gear = gear; e.gear.src = this.gearSrc[gear]; }
 
     for (const ev of events) {
       if (ev.type === 'in' && ev.customer) {
         const lm = stops[ev.customer.stop] && stops[ev.customer.stop].landmark;
         if (!lm) continue;   // the Crazy Box's stops have no landmark picture
-        const png = LANDMARK_DIR[lm.file] + String(lm.entry).padStart(2, '0') + '.png';
-        e.landmark.src = this.assets + png;
-        e.landmark.classList.remove('pack');
-        hiresLink(png).then((url) => {   // ?hires=1: the texture pack's picture, if it has one
-          if (url && e.landmark.src.endsWith(png)) { e.landmark.src = url; e.landmark.classList.add('pack'); }
-        });
+        this.showLandmark(LANDMARK_DIR[lm.file] + String(lm.entry).padStart(2, '0') + '.png');
         e['dest-name'].textContent = lm.name;
         e.dest.hidden = false;
       } else if (ev.type === 'out') {
@@ -176,7 +194,7 @@ export const HUD_CSS = DIGITS_CSS + `
 #hud-landmark { width: 13.33cqh; height: 13.33cqh; image-rendering: pixelated; border: 0.2cqh solid #fff; background: #000; }
 #hud-landmark.pack { image-rendering: auto; transform: scaleY(-1); }  /* the extracted landmark PNGs are upright (sky on top), the pack's are stored upside down */
 /* The gear box: a 64 x 64 sprite centred at (582, 420) of 640 x 480. */
-#hud-gear { position: absolute; right: 12.08cqh; top: 87.5%; width: 13.33cqh; height: 13.33cqh; transform: translate(50%, -50%) scaleY(-1); image-rendering: pixelated; }
+#hud-gear { position: absolute; right: 16cqh; top: 81%; width: 13.33cqh; height: 13.33cqh; transform: translate(50%, -50%) scaleY(-1); image-rendering: pixelated; }
 #hud-gear.pack { transform: translate(50%, -50%); image-rendering: auto; }
 #hud-card { position: absolute; left: 50%; top: 40%; transform: translate(-50%, -50%); text-align: center; font-size: 2.7cqh; background: rgba(0,0,0,.55); padding: 1.46cqh 2.92cqh; border-radius: 1.04cqh; }
 #hud-card .rating { font-size: 5cqh; } #hud-card .r2 { color: #30e030; } #hud-card .r1 { color: #f0d020; } #hud-card .r0 { color: #ff5050; }
