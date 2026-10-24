@@ -36,19 +36,19 @@ loader.register((parser) => ({
 
 export function loadGltf(url, onProgress) {
   return new Promise((resolve, reject) => loader.load(url, resolve, onProgress, reject))
-    .then((gltf) => { if (HIRES) useTexturePack(gltf); return gltf; });
+    .then((gltf) => { models.push(gltf); if (HIRES) useTexturePack(gltf); return gltf; });
 }
 
-// The hi-res texture pack (?hires=1). A Flycast custom texture pack (MK-51035), mapped
+// The hi-res texture pack (?hires=1, or H in game). A Flycast custom texture pack (MK-51035), mapped
 // onto the extracted textures by tools/match_texture_pack.py (local-assets/texture_pack/:
 // manifest.json + one link per matched texture), replaces a model's TEXDC textures once
 // it has loaded: the model shows at once with the game's textures, the pack's swap in
 // as they decode. The pack's images are upright, the extracted PNGs (and so the models'
 // UVs) upside down: decoded flipped. They are 4-32 times the game's size, ~1.7 GB of
 // texels for a city at full size, so they are scaled to at most 512 texels a side
-// (?hires=N: at most N) and drawn mipmapped. A texture with see-through texels whose pack
-// image has none (most of the pack is JPEG: the shop signs) gets the pack's image cut by
-// the game's alpha, scaled up. The menu's sprites
+// (?hires=N: at most N) and drawn mipmapped. A model texture with see-through texels gets
+// the pack's image cut by the game's alpha, scaled up (most of the pack is JPEG: the shop
+// signs; some of its PNGs' alpha doesn't match the game's: the palm crowns). The menu's sprites
 // (src/menu-view.js) and the HUD's destination pictures (src/hud.js) use it too.
 const PACK = 'local-assets/texture_pack/';
 
@@ -59,16 +59,60 @@ export function hiresCap(search) {
   const n = parseInt(v, 10);
   return n >= 2 ? n : 512;
 }
-export const HIRES = typeof location !== 'undefined' ? hiresCap(location.search) : 0;
+/** The pack's size cap while it is on, 0 while off (H toggles it). */
+export let HIRES = typeof location !== 'undefined' ? hiresCap(location.search) : 0;
+const PACK_CAP = HIRES || 512;
+const models = [];              // every loaded glTF, so H can swap the pack in later
+const originals = new Map();    // texture -> its sampling, put back when H turns the pack off
+const gameImages = new Map();   // THREE.Source -> the game's image it held before the pack's
 
-// H toggles the pack: the page reloads with ?hires=1 added or removed (HIRES is fixed per load).
+/** The game's image of a texture source (the pack's may be in it). */
+function gameImage(source) {
+  return gameImages.has(source) ? gameImages.get(source) : source.data;
+}
+
+/** Turn the pack on or off in place: the models' textures, the menu and the HUD follow HIRES. */
+export function setHires(on) {
+  HIRES = on ? PACK_CAP : 0;
+  if (typeof history !== 'undefined') {
+    const params = new URLSearchParams(location.search);
+    if (HIRES) params.set('hires', String(PACK_CAP === 512 ? 1 : PACK_CAP)); else params.delete('hires');
+    const q = params.toString();
+    history.replaceState(history.state, '', location.pathname + (q ? '?' + q : '') + location.hash);
+  }
+  if (HIRES) { for (const gltf of models) useTexturePack(gltf); return; }
+  for (const [source, data] of gameImages) source.data = data;
+  for (const [texture, o] of originals) {
+    texture.dispose();
+    texture.minFilter = o.minFilter;
+    texture.generateMipmaps = o.generateMipmaps;
+    texture.anisotropy = o.anisotropy;
+    texture.needsUpdate = true;
+  }
+  gameImages.clear();
+  originals.clear();
+}
+
 if (typeof addEventListener !== 'undefined') {
   addEventListener('keydown', (e) => {
     if (e.code !== 'KeyH' || e.repeat || e.metaKey || e.ctrlKey || e.altKey) return;
-    const params = new URLSearchParams(location.search);
-    if (HIRES) params.delete('hires'); else params.set('hires', '1');
-    location.search = params.toString();
+    setHires(!HIRES);
   });
+}
+
+/** Swap a pack image into a texture, keeping the game's to put back. */
+function swapIn(texture, img) {
+  const source = texture.source;
+  if (!gameImages.has(source)) gameImages.set(source, source.data);
+  if (!originals.has(texture)) {
+    originals.set(texture, { minFilter: texture.minFilter, generateMipmaps: texture.generateMipmaps, anisotropy: texture.anisotropy });
+  }
+  source.data = img;
+  texture.dispose();
+  texture.minFilter = THREE.LinearMipmapLinearFilter;
+  texture.generateMipmaps = true;
+  texture.anisotropy = 4;
+  texture.needsUpdate = true;
 }
 
 /** The manifest's key ('textures/TEXDC1/0046.png') for a glTF image URI, else null. */
@@ -208,8 +252,9 @@ export async function hiresImage(png, original) {
 }
 
 /**
- * The pack's image (no alpha: a JPEG) cut by the game's texture's alpha, scaled up smoothly
- * (the shop signs, logos and lamps on see-through quads), or null when it can't be drawn.
+ * The pack's image cut by the game's texture's alpha, scaled up smoothly (its own alpha, if
+ * any, kept too: the shop signs, logos and lamps on see-through quads, the palm crowns), or
+ * null when it can't be drawn.
  * Both are stored the same way up (packImage decodes flipped, the extracted PNGs are upside down).
  */
 function cutByAlpha(img, original) {
@@ -234,7 +279,7 @@ async function useTexturePack(gltf) {
   const { parser } = gltf;
   const entries = await packManifest();
   const textures = await parser.getDependencies('texture');
-  const swapped = new Map();  // Source -> Promise<boolean>
+  const swapped = new Map();  // Source -> Promise<image | null>
   textures.forEach((texture, i) => {
     const def = parser.json.textures[i];
     const t = entries.get(packKey(def && parser.json.images[def.source].uri));
@@ -243,24 +288,18 @@ async function useTexturePack(gltf) {
     const image = packImage(t, texture);
     if (!swapped.has(source)) {
       swapped.set(source, image.then((img) => {
-        if (!img) return false;
-        const before = textureAlpha(texture);
-        // A see-through texture whose pack image is a JPEG (the shop signs): cut by the game's alpha.
-        if (before !== 'solid' && textureAlpha({ image: img }) === 'solid') img = cutByAlpha(img, texture.image);
-        if (!img) return false;
-        textureAlphas.set(img, before);  // drawn as the game's texture is (see Draw order)
-        source.data = img;
-        return true;
+        if (!img || !HIRES) return null;
+        const game = { image: gameImage(source) };
+        const before = textureAlpha(game);
+        // A see-through texture: cut by the game's alpha, whatever the pack's. Its JPEGs (the shop
+        // signs) have none, and some of its PNGs' is wrong (TEXDC1/0019, the palm crowns: a
+        // fully opaque band of fronds where the game cuts out the leaves - drawn as filled triangles).
+        if (before !== 'solid') img = cutByAlpha(img, game.image);
+        if (img) textureAlphas.set(img, before);  // drawn as the game's texture is (see Draw order)
+        return img;
       }));
     }
-    swapped.get(source).then((ok) => {
-      if (!ok) return;
-      texture.dispose();
-      texture.minFilter = THREE.LinearMipmapLinearFilter;
-      texture.generateMipmaps = true;
-      texture.anisotropy = 4;
-      texture.needsUpdate = true;
-    });
+    swapped.get(source).then((img) => { if (img && HIRES) swapIn(texture, img); });
   });
   // The traffic cars' paints (tools/extract_vehicles.py): a body texture baked with the
   // PowerVR decal-alpha rule over the paint colour and embedded, so it has no URI to
@@ -278,14 +317,9 @@ async function useTexturePack(gltf) {
     const image = packImage(t, texture);
     if (!baked.has(id)) baked.set(id, image.then((img) => img && decalAlpha(img, colour)));
     baked.get(id).then((img) => {
-      if (!img || texture.source.data === img) return;
-      textureAlphas.set(img, textureAlpha(texture));   // alpha = the paint's: unchanged
-      texture.source.data = img;
-      texture.dispose();
-      texture.minFilter = THREE.LinearMipmapLinearFilter;
-      texture.generateMipmaps = true;
-      texture.anisotropy = 4;
-      texture.needsUpdate = true;
+      if (!img || !HIRES || texture.source.data === img) return;
+      textureAlphas.set(img, textureAlpha({ image: gameImage(texture.source) }));   // alpha = the paint's: unchanged
+      swapIn(texture, img);
     });
   }
 }
