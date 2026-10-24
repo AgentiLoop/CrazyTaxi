@@ -195,6 +195,10 @@ const FN = {
   // draws each object with nlObjPutUseViewMatrix; setObjHitPin counts the pins knocked down.
   initSetObject: 0x0C037728, execSetObject: 0x0C03768A, setObjFly: 0x0C036ED0, setObjFlyEnd: 0x0C03734C,
   objPut: 0x0C078FC0,
+  // ExecArrow's guide arrow (Crazy Bowling's over the next lane, Exec_DCmini_Game1's near the
+  // goal; green by nlObjPutSetFadeColor): nlObjPut(model) from its call at 0x0C035488, XMTRX
+  // the arrow in view space (camUpdate's view matrix, this frame's, already applied).
+  arrowPut: 0x0C078F90, execArrowPut: 0x0C035488,
   entryCarPut: 0x0C043BA2, trafficControl: 0x0C041ACC, executeEvent: 0x0C0296B6, execColliObj: 0x0C031EE4,
   putCarModel: 0x0C0434D0, putTrainModel: 0x0C0437FE,
   putPlayerCar: 0x0C0203E8, putPlayerCarByView: 0x0C0200E4,
@@ -307,6 +311,15 @@ export class DreamcastCar {
         const pr = c.pr >>> 0;
         if (pr >= FN.setObjFly && pr < FN.setObjFlyEnd) this.objects.push({ model: c.r[4] >>> 0, matrix: xmtrx(c), setObject: true });
         return 0;
+      });
+      cpu.hooks.set(FN.arrowPut, (c) => {
+        if ((c.pr >>> 0) === FN.execArrowPut) {
+          const view = new Float32Array(16);
+          for (let i = 0; i < 16; i++) view[i] = c.rf(G.viewMatrix + 4 * i);
+          const colour = [0, 1, 2].map((i) => c.rf(FN.fadeColourBase + i * 4));
+          this.objects.push({ model: c.r[4] >>> 0, matrix: xmtrx(c), view, colour, alpha: 1 });
+        }
+        return false;
       });
     }
     /** @type {object[]} the Crazy Box: the models its games drew this frame (see FN.objPutTrnsl) */

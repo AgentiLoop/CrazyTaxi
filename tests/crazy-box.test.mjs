@@ -4,6 +4,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { existsSync, readFileSync } from 'node:fs';
+import * as THREE from 'three';
 import { DreamcastCar, CRAZY_BOX, carFiles, courseModeOf } from '../src/dc-car.js';
 import { modelFile } from '../src/box-objects.js';
 import { DreamcastMenu, PAD, SAVE_SIZE } from '../src/dc-menu.js';
@@ -186,6 +187,29 @@ test('Crazy Bowling: the set objects run - the lane\'s pins are drawn (SetObjFly
   car.init();
   car.update(IDLE);
   assert.equal(count(), 70, 'a new go starts with every pin');
+});
+
+test('Crazy Bowling\'s guide arrow (ExecArrow): the arrow model, green, standing over the next lane as the cab drives', { skip: !have }, () => {
+  const ARROW = 0x0C46BAB8;   // POLDC0 0xDBAB8
+  const car = make(3);
+  const v = new THREE.Matrix4(), m = new THREE.Matrix4(), p = new THREE.Vector3();
+  const spots = [];
+  for (let n = 0; n < 900; n++) {
+    car.update(n > 190 ? { ...IDLE, accel: 1 } : IDLE);
+    const arrows = car.objects.filter((o) => o.view);
+    assert.equal(arrows.length, 1, `one arrow (frame ${n})`);
+    const a = arrows[0];
+    assert.equal(a.model, ARROW);
+    assert.deepEqual(a.colour, [0, 1, 0]);
+    if (n < 60) continue;   // it flies in from the camera first
+    p.setFromMatrixPosition(v.fromArray(a.view).invert().multiply(m.fromArray(a.matrix)));
+    const last = spots[spots.length - 1];
+    if (!last || Math.hypot(p.x - last.x, p.z - last.z) > 1) spots.push({ x: p.x, z: p.z, frame: n });
+  }
+  // Fixed in the world (it only bobs), then on to the next lane once the cab is near.
+  assert.ok(spots.length >= 2, `moves on (${JSON.stringify(spots)})`);
+  assert.ok(Math.abs(spots[0].x - 300) < 1 && Math.abs(spots[0].z + 3000) < 1, `first over the lane at (300, -3000): ${JSON.stringify(spots[0])}`);
+  assert.ok(spots[1].frame > 300, 'stays while the cab drives up');
 });
 
 test('a clear is filed in the records (CheckRanking); the save opens 1-4 in the menu once 1-1 to 1-3 are cleared', { skip: !have }, () => {

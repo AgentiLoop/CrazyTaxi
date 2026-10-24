@@ -7,6 +7,9 @@
 // round balloons read as round.
 // The set objects SetObjFly draws (`setObject`: Crazy Bowling's pins, flying when hit) are
 // the textured models as the props show them (unlit), placed by XMTRX.
+// ExecArrow's guide arrow (Crazy Bowling's, over the next lane) comes in view space with
+// the view matrix it was drawn with (`view`): placed by the view's inverse times XMTRX,
+// opaque, coloured by its fade colour (green) and lit like the balloons.
 import * as THREE from 'three';
 import { loadGltf, makeUnlit } from './scene.js';
 
@@ -27,6 +30,7 @@ export class BoxObjects {
     this.pool = [];            // the meshes, reused frame to frame
     this.copies = new Map();   // address -> the set objects' copies of its textured scene, reused frame to frame
     this.drawn = 0;
+    this._m = new THREE.Matrix4();
   }
 
   model(address) {
@@ -76,10 +80,13 @@ export class BoxObjects {
           this.pool.push(mesh);
         }
         mesh.geometry = g;
-        mesh.matrix.fromArray(o.matrix);
+        if (o.view) mesh.matrix.fromArray(o.view).invert().multiply(this._m.fromArray(o.matrix));
+        else mesh.matrix.fromArray(o.matrix);
         mesh.matrixWorldNeedsUpdate = true;
         mesh.material.color.setRGB(o.colour[0], o.colour[1], o.colour[2]);
         mesh.material.opacity = o.alpha;
+        mesh.material.transparent = o.alpha < 1;
+        mesh.material.depthWrite = o.alpha >= 1;
         mesh.visible = true;
         n++;
         p++;
