@@ -9,7 +9,8 @@ import { KIND_NAMES } from './collision.js';
 import { DreamcastCar, STEP, WHEEL_RADIUS, CRAZY_BOX, carFiles, courseModeOf } from './dc-car.js';
 import { Input } from './input.js';
 import { CITIES } from './start.js';
-import { loadGltf, makeUnlit, GameCamera, packView } from './scene.js';
+import { loadGltf, releaseGltf, packBatched, makeUnlit, GameCamera, packView, pixelRatio } from './scene.js';
+import { batchStatic } from './static-batch.js';
 import { PeopleView } from './people.js';
 import { Hud, HUD_CSS } from './hud.js';
 import { CartoonDigits } from './cartoon-digits.js';
@@ -43,7 +44,6 @@ const say = (t) => { status.textContent = t; };
 
 const canvas = document.getElementById('view');
 const renderer = new THREE.WebGLRenderer({ antialias: true, canvas, stencil: true });   // stencil: the shadow volumes
-renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
 
 const scene = new THREE.Scene();
 const SKY = 0x7fb2e5;
@@ -58,6 +58,7 @@ packView(scene, camera, renderer);   // the texture pack's downloads: nearest th
 let car = null;
 
 function resize() {
+  renderer.setPixelRatio(pixelRatio(innerWidth, innerHeight, devicePixelRatio));   // at most MAX_PIXELS (scene.js)
   renderer.setSize(innerWidth, innerHeight);
   camera.aspect = innerWidth / innerHeight;
   camera.updateProjectionMatrix();
@@ -152,6 +153,14 @@ async function main() {
   // The Crazy Box's set objects run (ExecSetObject): they are drawn as SetObjFly draws them
   // (boxObjects: Crazy Bowling's pins of the lane in play, flying when hit), not the props.
   if (car.setObjects) propsGltf.scene.visible = false;
+  // The city and its set objects merged into a few draw calls (src/static-batch.js): the
+  // 60 fps need it. Off with ?batch=0. The hi-res pack draws the batches from scaled atlases
+  // (scene.js packBatched), on now (?hires=1) or when H turns it on.
+  const batched = params.get('batch') !== '0' ? batchStatic(scene, [cityGltf.scene, propsGltf.scene], renderer) : null;
+  if (batched) {
+    packBatched(batched, [cityGltf, propsGltf], renderer);
+    releaseGltf(cityGltf); releaseGltf(propsGltf);   // the single meshes' arrays go back to the browser
+  }
   // Browsers play nothing before a gesture: the first key or click starts the sound
   // (a song cued during the countdown picks up where it would be).
   for (const ev of ['keydown', 'pointerdown']) addEventListener(ev, () => audio.start(), { once: true });
@@ -311,7 +320,7 @@ async function main() {
   // For tests and probes.
   window.__game = {
     car, scene, camera, gameCamera, renderer, cityName, wheelRadius: WHEEL_RADIUS, stops,
-    people, traffic, cabShadow, navArrow, restart, audio, boxObjects,
+    people, traffic, cabShadow, navArrow, restart, audio, boxObjects, batched,
   };
 }
 

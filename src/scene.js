@@ -3,6 +3,7 @@
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { KTX2Loader } from 'three/addons/loaders/KTX2Loader.js';
+import { scaledAtlases, swapAtlases } from './static-batch.js';
 
 const loader = new GLTFLoader();
 
@@ -40,6 +41,20 @@ export function loadGltf(url, onProgress) {
     .then((gltf) => { models.push(gltf); if (HIRES) useTexturePack(gltf); return gltf; });
 }
 
+/**
+ * Let go of a loaded glTF whose meshes are drawn no more (src/static-batch.js merged them):
+ * its parser's caches hold the file's buffers and every parsed geometry, texture and
+ * material - tens of MB for a city - and the pack would otherwise swap textures into it.
+ */
+export function releaseGltf(gltf) {
+  const i = models.indexOf(gltf);
+  if (i >= 0) models.splice(i, 1);
+  if (gltf.parser && gltf.parser.cache) gltf.parser.cache.removeAll();
+  gltf.parser = null;
+  gltf.scene = null;
+  gltf.scenes = [];
+}
+
 // The hi-res texture pack (?hires=1, or H in game). A Flycast custom texture pack (MK-51035), mapped
 // onto the extracted textures by tools/match_texture_pack.py (local-assets/texture_pack/:
 // manifest.json + one link per matched texture), replaces a model's TEXDC textures once
@@ -71,6 +86,7 @@ const PACK_CAP = HIRES || 512;
 const models = [];              // every loaded glTF, so H can swap the pack in later
 const originals = new Map();    // texture -> its sampling, put back when H turns the pack off
 const gameImages = new Map();   // THREE.Source -> the game's image it held before the pack's
+let batchedPack = null;         // the batched world's pack (packBatched): { batched, renderer, keyed, atlases, shown }
 
 /** The game's image of a texture source (the pack's may be in it). */
 function gameImage(source) {
@@ -86,7 +102,12 @@ export function setHires(on) {
     const q = params.toString();
     history.replaceState(history.state, '', location.pathname + (q ? '?' + q : '') + location.hash);
   }
-  if (HIRES) { for (const gltf of models) useTexturePack(gltf); return; }
+  if (HIRES) {
+    for (const gltf of models) useTexturePack(gltf);
+    if (batchedPack) showBatchedPack();
+    return;
+  }
+  if (batchedPack && batchedPack.shown) { swapAtlases(batchedPack.batched, batchedPack.batched.batch.atlases); batchedPack.shown = false; }
   for (const [source, data] of gameImages) source.data = data;
   for (const [texture, o] of originals) {
     texture.dispose();
@@ -325,40 +346,52 @@ export async function hiresLink(png) {
   return t ? PACK + packSource(t, HIRES)[0] : null;
 }
 
+/**
+ * The pack's image for a model texture's source, cut by the game's alpha where the game's
+ * texture is see-through, whatever the pack's: its JPEGs (the shop signs) have none, and some
+ * of its PNGs' is wrong (TEXDC1/0019, the palm crowns: a fully opaque band of fronds where
+ * the game cuts out the leaves - drawn as filled triangles). Null when the pack has none.
+ */
+function packedImage(t, texture) {
+  return packImage(t, texture).then((img) => {
+    if (!img) return null;
+    const game = { image: gameImage(texture.source) };
+    const before = textureAlpha(game);
+    if (before !== 'solid') img = cutByAlpha(img, game.image);
+    if (img) textureAlphas.set(img, before);  // drawn as the game's texture is (see Draw order)
+    return img;
+  });
+}
+
+/** Each of a glTF's textures (its json's order) with the pack's manifest entry for its image, [[texture, entry]] (unmatched ones left out). */
+function packEntriesOf(json, textures, entries) {
+  return textures.map((texture, i) => {
+    const def = json.textures[i];
+    const t = entries.get(packKey(def && json.images[def.source].uri));
+    return texture && t ? [texture, t] : null;
+  }).filter(Boolean);
+}
+
 async function useTexturePack(gltf) {
   const { parser } = gltf;
   const entries = await packManifest();
-  const textures = await parser.getDependencies('texture');
+  if (!models.includes(gltf)) return;   // let go (releaseGltf) meanwhile: batched, its textures draw no more
+  const keyed = packEntriesOf(parser.json, await parser.getDependencies('texture'), entries);
+  if (!models.includes(gltf)) return;
   const swapped = new Map();  // Source -> Promise<image | null>
-  textures.forEach((texture, i) => {
-    const def = parser.json.textures[i];
-    const t = entries.get(packKey(def && parser.json.images[def.source].uri));
-    if (!texture || !t) return;
+  for (const [texture, t] of keyed) {
     const source = texture.source;
     if (t.ktx2 && ktx2) {
       packKtx2(t, texture).then((k) => {
-        if (!k || !HIRES) return;
+        if (!k || !HIRES || !models.includes(gltf)) return;
         textureAlphas.set(k.image, textureAlpha({ image: gameImage(source) }));   // drawn as the game's texture is
         swapInCompressed(texture, k);
       });
-      return;
+      continue;
     }
-    const image = packImage(t, texture);
-    if (!swapped.has(source)) {
-      swapped.set(source, image.then((img) => {
-        if (!img || !HIRES) return null;
-        const game = { image: gameImage(source) };
-        const before = textureAlpha(game);
-        // A see-through texture: cut by the game's alpha, whatever the pack's. Its JPEGs (the shop
-        // signs) have none, and some of its PNGs' is wrong (TEXDC1/0019, the palm crowns: a
-        // fully opaque band of fronds where the game cuts out the leaves - drawn as filled triangles).
-        if (before !== 'solid') img = cutByAlpha(img, game.image);
-        if (img) textureAlphas.set(img, before);  // drawn as the game's texture is (see Draw order)
-        return img;
-      }));
-    }
-    swapped.get(source).then((img) => { if (img && HIRES) swapIn(texture, img); });
-  });
+    if (!swapped.has(source)) swapped.set(source, packedImage(t, texture));
+    swapped.get(source).then((img) => { if (img && HIRES && models.includes(gltf)) swapIn(texture, img); });
+  }
   // The traffic cars' paints (tools/extract_vehicles.py): a body texture baked with the
   // PowerVR decal-alpha rule over the paint colour and embedded, so it has no URI to
   // match. Its material's extras name the TEXDC texture and the colour: bake the pack's
@@ -380,6 +413,40 @@ async function useTexturePack(gltf) {
       swapIn(texture, img);
     });
   }
+}
+
+/**
+ * The pack on the batched world (src/static-batch.js batchStatic merged the city's and the set
+ * objects' meshes; their glTFs can be let go after this): atlases BATCH_SCALE times the
+ * game's, the pack's pictures in the tiles, drawn while HIRES is on (built the first time, kept).
+ * @param {THREE.Group} batched batchStatic's group
+ * @param {object[]} gltfs the glTFs it merged (their image URIs name the pack's pictures)
+ */
+export function packBatched(batched, gltfs, renderer) {
+  const deps = gltfs.map((g) => [g.parser.json, g.parser.getDependencies('texture')]);   // now: the glTFs may be let go next
+  const keyed = packManifest().then((entries) => Promise.all(deps.map(([json, textures]) => textures.then((ts) => packEntriesOf(json, ts, entries)))))
+    .then((lists) => new Map(lists.flat().map(([texture, t]) => [texture.source, [texture, t]])));
+  batchedPack = { batched, renderer, keyed, atlases: null, shown: false };
+  if (HIRES) showBatchedPack();
+}
+
+// A 64 x 64 game texture at 4 x 4 is the pack at 256 (its 512 would be a 16384 atlas: 1 GB).
+const BATCH_SCALE = 4;
+
+function showBatchedPack() {
+  const p = batchedPack;
+  if (!p.atlases) {
+    const { batch } = p.batched;
+    const scale = Math.min(BATCH_SCALE, p.renderer.capabilities.maxTextureSize / batch.atlasSize, Math.max(1, 2 ** Math.floor(Math.log2(PACK_CAP / 128))));
+    p.atlases = p.keyed.then((keyed) => (HIRES ? scaledAtlases(p.renderer, batch, scale, (source) => {
+      const k = keyed.get(source);
+      return k ? packedImage(k[1], k[0]) : Promise.resolve(null);
+    }) : null));
+  }
+  p.atlases.then((atlases) => {
+    if (!atlases) { p.atlases = null; return; }   // turned off before they were begun: next time
+    if (HIRES && batchedPack === p && !p.shown) { swapAtlases(p.batched, atlases); p.shown = true; }
+  });
 }
 
 /** A texture baked the PowerVR decal-alpha way: RGB = texture RGB * A + colour RGB * (1 - A), A = colour A. */
@@ -542,6 +609,17 @@ export class GameCamera {
       this.camera.updateProjectionMatrix();
     }
   }
+}
+
+/**
+ * The device pixel ratio to draw a w x h window at: the screen's up to 2, and at most
+ * MAX_PIXELS on the canvas (1920 x 1440, three times the Dreamcast's 640 x 480; 2560 x 1920 is where the
+ * M4 holds 60 fps). A full 5K screen would be four times that in frame buffers (~500 MB
+ * with the multisampling) for a picture the Dreamcast drew at 640 x 480.
+ */
+export const MAX_PIXELS = 1920 * 1440;
+export function pixelRatio(w, h, dpr) {
+  return Math.min(dpr, 2, Math.sqrt(MAX_PIXELS / (w * h)));
 }
 
 /** The largest 4:3 picture inside w x h: { x, y, width, height } (black bars around it). */

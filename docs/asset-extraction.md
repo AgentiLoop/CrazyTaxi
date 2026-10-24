@@ -1445,7 +1445,10 @@ texel late.
 
 In the game: `?hires=1` (`src/scene.js`, `loadGltf`) swaps the pack into every
 model's TEXDC textures (city, set objects, cabs, traffic, people) after the model
-has loaded: decoded flipped (`createImageBitmap` `imageOrientation: 'flipY'`),
+has loaded (the batched city and set objects - `src/static-batch.js` - through
+`packBatched`: the atlases again at four times the size with the pack's pictures in
+the tiles, swapped into the batched materials, so a 64 x 64 game texture shows the pack
+at 256): decoded flipped (`createImageBitmap` `imageOrientation: 'flipY'`),
 scaled to at most 512 texels a side (`?hires=N`: at most N; the full-size pack is
 ~1.7 GB of texels per city), mipmapped. A texture with see-through texels keeps the
 game's image when the pack's has none (31 TEXDC textures whose pack file is a

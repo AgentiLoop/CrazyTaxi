@@ -13,3 +13,5 @@ local-assets/
 __pycache__/
 *.pyc
 asset-release/
+mac/.build/
+mac/build/
