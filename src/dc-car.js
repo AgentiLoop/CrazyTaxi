@@ -98,6 +98,7 @@ const SPL_BASE = 0x0C328000;
 const MOT_BASE = 0x0C880000;
 const POL0_BASE = 0x0C390000;
 const COL_BASE = 0x0CB40000;
+const OBJ_BASE = 0x0CE90000, OBJ_SIZE = 0x8000;   // loadCity: gdc_FileLoad(OBJDCn, 0x8000), the set objects' groups
 const CAR = 0x0C176E4C;
 export const CASH_CAP = 9999999;
 export const CRAZY_BOX = 2;           // Game_No / CourseMode of the Crazy Box
@@ -188,6 +189,12 @@ const FN = {
   // Exec_Balloon: its 20 balloons, POLDC0 0xDF828, 2.4 times; 4.8 times POLDC3 0x1998 once
   // hit), drawn in XMTRX with the fade colour nlObjPutSetFadeColorBase sets (0x0C148678).
   objPutTrnsl: 0x0C079030, fadeColourBase: 0x0C148678,
+  // The set objects (OBJDCn.BIN's groups, loaded at 0x0CE90000): InitSetObject picks the
+  // groups a run opens (the Crazy Box: a range per game - Crazy Bowling's pins are group 0),
+  // ExecSetObject opens them (each group an event: setObjGroupExec), SetObjFly moves and
+  // draws each object with nlObjPutUseViewMatrix; setObjHitPin counts the pins knocked down.
+  initSetObject: 0x0C037728, execSetObject: 0x0C03768A, setObjFly: 0x0C036ED0, setObjFlyEnd: 0x0C03734C,
+  objPut: 0x0C078FC0,
   entryCarPut: 0x0C043BA2, trafficControl: 0x0C041ACC, executeEvent: 0x0C0296B6, execColliObj: 0x0C031EE4,
   putCarModel: 0x0C0434D0, putTrainModel: 0x0C0437FE,
   putPlayerCar: 0x0C0203E8, putPlayerCarByView: 0x0C0200E4,
@@ -278,6 +285,7 @@ export class DreamcastCar {
     cpu.load(COL_BASE, data.collision);
     if (data.motions) cpu.load(MOT_BASE, data.motions);
     if (data.people) cpu.load(POL0_BASE, data.people);
+    this.setObjectFile = data.objects ? data.objects.subarray(0, OBJ_SIZE) : null;
     for (const a of STUBS) cpu.hooks.set(a, () => 0);
     /** @type {object[]} the Crazy Box: the sprites nlSprPut drew this frame (see FN.sprPut) */
     this.sprites = [];
@@ -292,6 +300,12 @@ export class DreamcastCar {
         for (let i = 0; i < 16; i++) matrix[i] = c.xf(i);
         const colour = [0, 1, 2].map((i) => c.rf(FN.fadeColourBase + i * 4));
         this.objects.push({ model: c.r[4] >>> 0, matrix, colour, alpha: c.f(4) });
+        return 0;
+      });
+      // The set objects SetObjFly draws (textured, opaque); every other model draw stays stubbed.
+      cpu.hooks.set(FN.objPut, (c) => {
+        const pr = c.pr >>> 0;
+        if (pr >= FN.setObjFly && pr < FN.setObjFlyEnd) this.objects.push({ model: c.r[4] >>> 0, matrix: xmtrx(c), setObject: true });
         return 0;
       });
     }
@@ -471,6 +485,11 @@ export class DreamcastCar {
     this.call(FN.initCollision);
     // InitCollision runs InitColliWall itself (for the Crazy Box with MiniGame_No's walls).
     if (this.courseMode !== CRAZY_BOX) this.call(FN.initColliWall);
+    // The Crazy Box's set objects (Crazy Bowling's pins...): the file afresh, InitSetObject.
+    if (this.setObjects) {
+      cpu.load(OBJ_BASE, this.setObjectFile);
+      this.call(FN.initSetObject);
+    }
     this.call(FN.initCarMain);
     if (this.city === CRAZY_BOX) this.call(FN.initDCmini);
     this.call(FN.initCamera, { r4: 0 });
@@ -632,6 +651,7 @@ export class DreamcastCar {
     this.tricks = [];
     this.people = [];
     if (this.kyaku) this.call(FN.execKyakuMain);
+    if (this.setObjects) this.call(FN.execSetObject);
     if (this.courseMode !== CRAZY_BOX || this.miniGame !== 0) this.call(FN.execKyakuArea);
     this.call(FN.actExecute);
     this.call(FN.entryCarPut, { r4: 1 });
@@ -663,6 +683,9 @@ export class DreamcastCar {
     }
     if (cpu.r32(G.gameState) === 2 && before.state !== 2) this.events.push({ type: 'timeUp' });
   }
+
+  /** Whether the set objects run: the Crazy Box's (OBJDCn.BIN given). */
+  get setObjects() { return this.city === CRAZY_BOX && !!this.setObjectFile; }
 
   /** Whether the customers run: everywhere but the Crazy Box's games 0-3 (gameState0, gameStateDrive). */
   get kyaku() { return this.courseMode !== CRAZY_BOX || this.miniGame > 3; }
@@ -800,7 +823,7 @@ export function courseModeOf(city, game = 0) {
 export function carFiles(city) {
   return {
     exe: 'disc/1ST_READ.BIN', courses: `disc/SPLDC${city + 1}.BIN`, collision: `disc/COLDC${city + 1}.BIN`,
-    motions: 'disc/MOTDC.BIN', people: 'disc/POLDC0.BIN',
+    motions: 'disc/MOTDC.BIN', people: 'disc/POLDC0.BIN', objects: `disc/OBJDC${city + 1}.BIN`,
   };
 }
 

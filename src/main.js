@@ -146,10 +146,10 @@ async function main() {
   if (entries) {
     const keep = new Set(entries.map((n) => `entry_${String(n).padStart(3, '0')}`));
     cityGltf.scene.traverse((o) => { if (/^entry_\d{3}$/.test(o.name)) o.visible = keep.has(o.name); });
-    // Its set objects too: OBJDC3's groups list the games that open them (tools/extract_props.py).
-    const run = `Crazy Box MiniGame_No ${MINI_GAME}`;
-    propsGltf.scene.traverse((o) => { if (o.userData.runs) o.visible = o.userData.runs.includes(run); });
   }
+  // The Crazy Box's set objects run (ExecSetObject): they are drawn as SetObjFly draws them
+  // (boxObjects: Crazy Bowling's pins of the lane in play, flying when hit), not the props.
+  if (car.setObjects) propsGltf.scene.visible = false;
   // Browsers play nothing before a gesture: the first key or click starts the sound
   // (a song cued during the countdown picks up where it would be).
   for (const ev of ['keydown', 'pointerdown']) addEventListener(ev, () => audio.start(), { once: true });

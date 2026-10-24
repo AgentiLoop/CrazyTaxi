@@ -148,6 +148,46 @@ test('Crazy Balloons: the 20 balloons are drawn; driving into one pops it and co
   assert.equal(count(), 19);
 });
 
+test('Crazy Bowling: the set objects run - the lane\'s pins are drawn (SetObjFly), fly when hit and the count goes down', { skip: !have }, () => {
+  const PIN = 0x0C5E0600;   // POLDC3 0x600, kind 17
+  const car = make(3);
+  const pins = () => car.objects.filter((o) => o.setObject);
+  // The count (tens, ones: SPRCOMM digits 80-89 at 531's right) starts at 70, the seven lanes' pins.
+  const count = () => {
+    const d = car.sprites.filter((s) => s.texture >= 80 && s.texture <= 89);
+    return (d[0].texture - 80) * 10 + d[1].texture - 80;
+  };
+  car.update(IDLE);
+  assert.equal(count(), 70);
+  let n = 1, seen = 0, flying = 0;
+  for (; n < 900 && count() === 70; n++) {
+    let input = IDLE;
+    if (n > 190) {   // at the nearest pin ahead
+      let best = null, bd = Infinity;
+      for (const o of pins()) {
+        const dx = o.matrix[12] - car.pos.x, dz = o.matrix[14] - car.pos.z, d = Math.hypot(dx, dz);
+        if (dx * Math.sin(car.heading) + dz * Math.cos(car.heading) > 5 && d < bd) { bd = d; best = o; }
+      }
+      let steer = 0;
+      if (best) {
+        const e = Math.atan2(best.matrix[12] - car.pos.x, best.matrix[14] - car.pos.z) - car.heading;
+        steer = Math.max(-1, Math.min(1, -Math.atan2(Math.sin(e), Math.cos(e)) * 3));
+      }
+      input = { ...IDLE, accel: 0.8, steer };
+    }
+    car.update(input);
+    seen = Math.max(seen, pins().length);
+    flying = Math.max(flying, pins().filter((o) => Math.abs(o.matrix[13] - 8) > 0.5 || Math.abs(o.matrix[5] - 1) > 0.01).length);
+  }
+  assert.equal(seen, 10, 'one lane\'s ten pins at a time');
+  assert.ok(pins().every((o) => o.model === PIN));
+  assert.ok(count() < 70, `pins knocked down (${count()} left, frame ${n})`);
+  assert.ok(flying > 0, 'the hit pins fly (SetObjFly)');
+  car.init();
+  car.update(IDLE);
+  assert.equal(count(), 70, 'a new go starts with every pin');
+});
+
 test('a clear is filed in the records (CheckRanking); the save opens 1-4 in the menu once 1-1 to 1-3 are cleared', { skip: !have }, () => {
   const START_EXCELLENT = 0x0C05ABE8;   // what each game calls when it is cleared
   let save = null;

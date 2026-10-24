@@ -5,8 +5,10 @@
 // coloured by the fade colour (nlObjPutSetFadeColorBase: the balloon's own of ten).
 // The models are untextured; they are lit by the scene's light (the nav arrow's), so the
 // round balloons read as round.
+// The set objects SetObjFly draws (`setObject`: Crazy Bowling's pins, flying when hit) are
+// the textured models as the props show them (unlit), placed by XMTRX.
 import * as THREE from 'three';
-import { loadGltf } from './scene.js';
+import { loadGltf, makeUnlit } from './scene.js';
 
 const POL0 = 0x0C390000, POL_CITY = 0x0C5E0000;
 
@@ -21,32 +23,52 @@ export class BoxObjects {
     this.scene = scene;
     this.assets = assets;
     this.courseMode = courseMode;
-    this.models = new Map();   // address -> geometry list (null while loading or missing)
+    this.models = new Map();   // address -> { parts: geometry list, unlit: the textured scene } (null while loading or missing)
     this.pool = [];            // the meshes, reused frame to frame
+    this.copies = new Map();   // address -> the set objects' copies of its textured scene, reused frame to frame
     this.drawn = 0;
   }
 
-  geometry(address) {
+  model(address) {
     if (!this.models.has(address)) {
       this.models.set(address, null);
       loadGltf(this.assets + modelFile(address, this.courseMode)).then((gltf) => {
         const parts = [];
         gltf.scene.updateMatrixWorld(true);
         gltf.scene.traverse((o) => { if (o.isMesh) parts.push(o.geometry.clone().applyMatrix4(o.matrixWorld)); });
-        this.models.set(address, parts);
+        this.models.set(address, { parts, unlit: makeUnlit(gltf.scene) });
       }, (e) => console.warn(`Crazy Box model 0x${address.toString(16)}: ${e.message}`));
     }
     return this.models.get(address);
   }
 
-  /** @param {{model: number, matrix: Float32Array, colour: number[], alpha: number}[]} objects */
+  /** @param {{model: number, matrix: Float32Array, colour?: number[], alpha?: number, setObject?: boolean}[]} objects */
   update(objects) {
-    let n = 0;
+    let n = 0, p = 0;
+    const used = new Map();
     for (const o of objects) {
-      const parts = this.geometry(o.model);
-      if (!parts) continue;
-      for (const g of parts) {
-        let mesh = this.pool[n];
+      const m = this.model(o.model);
+      if (!m) continue;
+      if (o.setObject) {
+        const k = used.get(o.model) || 0;
+        used.set(o.model, k + 1);
+        let list = this.copies.get(o.model);
+        if (!list) this.copies.set(o.model, list = []);
+        let copy = list[k];
+        if (!copy) {
+          copy = m.unlit.clone();
+          copy.matrixAutoUpdate = false;
+          this.scene.add(copy);
+          list.push(copy);
+        }
+        copy.matrix.fromArray(o.matrix);
+        copy.matrixWorldNeedsUpdate = true;
+        copy.visible = true;
+        n++;
+        continue;
+      }
+      for (const g of m.parts) {
+        let mesh = this.pool[p];
         if (!mesh) {
           mesh = new THREE.Mesh(g, new THREE.MeshLambertMaterial({ transparent: true, depthWrite: false }));
           mesh.matrixAutoUpdate = false;
@@ -60,9 +82,11 @@ export class BoxObjects {
         mesh.material.opacity = o.alpha;
         mesh.visible = true;
         n++;
+        p++;
       }
     }
-    for (let i = n; i < this.pool.length; i++) this.pool[i].visible = false;
+    for (let i = p; i < this.pool.length; i++) this.pool[i].visible = false;
+    for (const [address, list] of this.copies) for (let i = used.get(address) || 0; i < list.length; i++) list[i].visible = false;
     this.drawn = n;
   }
 }
