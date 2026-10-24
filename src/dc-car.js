@@ -86,7 +86,7 @@
 // 2 pi * 0.006 km/h). Headings: forward = (sin h, 0, cos h).
 
 import { SH4 } from './sh4.js';
-import { readSprite } from './dc-menu.js';
+import { readSprite, SAVE_SIZE } from './dc-menu.js';
 
 export const STEP = 1 / 60;
 export const WHEEL_RADIUS = 2.964;   // the drawn wheel (cab_0.glb); the physics uses +0x12C = 2.87
@@ -160,6 +160,14 @@ const FN = {
   // TRY AGAIN window (SetWindow(2)), voice 0x275, the songs stopped. The window's code does
   // not run here, so the game calls it again every frame: only the first call runs.
   callTryAgain: 0x0C03FC9A,
+  // End_Excellent: the clear's record window has been up 210 frames (Exec_Excellent) - the
+  // game moves on (sub mode 2) and is over too.
+  endExcellent: 0x0C05AC28,
+  // BupInit (the boot's set-up): the settings' defaults, the four players' records
+  // (saveBufferInit: the default name, no box cleared, every rank empty), the rankings'
+  // defaults. Put_Record_Window's CheckRanking then files a clear in the player's record
+  // (the box's ranks, the cleared bit CheckBoxFlag unlocks the next boxes by).
+  bupInit: 0x0C039994,
   // The Crazy Box's 2D overlay is the game's own: execDCmini's Put_JumpDistance, the games'
   // timers and counts, Start_Fault / Start_Excellent's banners, and Put_ReadySetGo (the
   // READY / GO countdown and its two voices, stubbed in the other modes) all end in
@@ -353,6 +361,7 @@ export class DreamcastCar {
       this.tryAgain = true;
       return false;
     });
+    cpu.hooks.set(FN.endExcellent, () => { this.tryAgain = this.cleared = true; return false; });
     this.audio = opts.audio || null;
     this.aspect = DC_ASPECT;              // the picture's width / height the culling is for (main.js: the window's)
     this.city = opts.city || 0;
@@ -376,7 +385,10 @@ export class DreamcastCar {
     cpu.w32(G.subwayFlag, 0);
     // The settings (0x0C2881F0): the boot's set-up (0x0C0399B4) copies the defaults in -
     // byte 1 the start time (4: 50 s), byte 2 the customer time offset (3: none).
+    this.call(FN.bupInit);
     for (let i = 0; i < 16; i++) cpu.w8(G.options + i, cpu.r8(G.optionDefaults + i));
+    // The memory card's save (the settings and the records, see save()), when there is one.
+    if (opts.save) cpu.ram.set(opts.save.subarray(0, SAVE_SIZE), G.options & 0x00FFFFFF);
     // CourseTableSet(city) and init_GameSystem's course line.
     const table = cpu.r32(G.courseDirectory + this.courseMode * 8), count = cpu.r32(G.courseDirectory + this.courseMode * 8 + 4);
     cpu.w32(G.courseTable, table); cpu.w32(G.courseCount, count);
@@ -420,6 +432,7 @@ export class DreamcastCar {
   init() {
     const cpu = this.cpu;
     this.tryAgain = false;
+    this.cleared = false;
     this.call(FN.initMatrixStack, { r4: MATRIX_STACK, r5: MATRIX_STACK_SIZE });
     cpu.w32(G.heapPtr, HEAP);
     this.call(FN.initHeap, { r4: HEAP, r5: HEAP_SIZE });
@@ -649,12 +662,23 @@ export class DreamcastCar {
   /**
    * The Crazy Box game's state (USA addresses of the decomp's 0x0C2A992C etc.): flags (0x20 Start_Fault,
    * 0x10 Start_Excellent; game 0 starts with 4), the fault's reason and the game's score word.
-   * Exec_Fault ends the game 180 frames after a fault; `over`: the game has ended (callTryAgain).
+   * Exec_Fault ends the game 180 frames after a fault; `over`: the game has ended (callTryAgain,
+   * or End_Excellent after the clear - which takes 0x10 off, `excellent` stays).
    */
   crazyBox() {
     const cpu = this.cpu;
     const flags = cpu.r16(0x0C2A6E24);
-    return { flags, fault: !!(flags & 0x20), excellent: !!(flags & 0x10), reason: cpu.r32(0x0C2A6E28), score: cpu.rs32(0x0C2A6DEC), over: this.tryAgain };
+    return { flags, fault: !!(flags & 0x20), excellent: !!(flags & 0x10) || this.cleared, reason: cpu.r32(0x0C2A6E28), score: cpu.rs32(0x0C2A6DEC), over: this.tryAgain };
+  }
+
+  /**
+   * The memory card's save as the game keeps it in RAM: the settings at 0x0C2881F0, the
+   * players' records from +0x10 (0x788 bytes each: the name, +4 the boxes cleared, +0x3C8
+   * the boxes' ranks) and the rankings - the 0x25B0 bytes BupInit backs up.
+   */
+  save() {
+    const a = G.options & 0x00FFFFFF;
+    return this.cpu.ram.slice(a, a + SAVE_SIZE);
   }
 
   /** How many traffic cars exist (CarEntryNum) and the density level (TrafficLevel). */

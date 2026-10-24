@@ -6,7 +6,7 @@
 // Keys in the menu, as the Dreamcast pad: arrows / WASD = d-pad, Z / Enter / Space =
 // A (choose), X / Escape / Backspace = B (back), Q = Start. On the title, which only
 // takes START on the Dreamcast, the A keys press START too.
-import { DreamcastMenu, PAD, MODES } from './dc-menu.js';
+import { DreamcastMenu, PAD, MODES, loadSave } from './dc-menu.js';
 import { MenuView, FONTS } from './menu-view.js';
 import { SelectView } from './select-view.js';
 import { letterbox } from './scene.js';
@@ -54,7 +54,7 @@ async function runMenu() {
   if (audio.ctx) for (const wav of ['SONG01/0000.wav', 'VOICE01/0672.wav']) audio.buffer(wav).catch(() => {});
   const startAudio = () => audio.start();
   for (const ev of ['keydown', 'pointerdown']) addEventListener(ev, startAudio);
-  const menu = new DreamcastMenu(exe, { title: true, motions, audio: audio.ctx ? audio : null });
+  const menu = new DreamcastMenu(exe, { title: true, motions, audio: audio.ctx ? audio : null, save: loadSave(localStorage) });
   const canvas = document.createElement('canvas');
   canvas.id = 'menu';
   canvas.style.position = 'fixed';

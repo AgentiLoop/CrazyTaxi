@@ -78,6 +78,7 @@ const FN = {
   menuSetMode: 0x0C03EB32,
   sprPut: 0x0C07D018, putc: 0x0C03055E,
   fileLoad: 0x0C02D4E2,
+  bupInit: 0x0C039994,                // the boot's set-up: the settings' defaults, the players' records, the rankings
   soundRequest: 0x0C071338,
   // The sound (src/audio.js plays it through opts.audio). The menu sends its cursor and
   // decide sounds straight to the driver's command ring (0x0C07EA8C, the word as
@@ -139,6 +140,27 @@ export function readSprite(cpu, p) {
     colour: tint,
     filter: !!(flags & 0x1000),
   };
+}
+
+/** The save's size: the settings at 0x0C2881F0, the players' records and the rankings (BupInit's 0x25B0). */
+export const SAVE_SIZE = 0x25B0;
+const SAVE_KEY = 'crazytaxi.save';
+
+/** The save kept in storage (localStorage) as the memory card would keep it, or null. */
+export function loadSave(storage) {
+  try {
+    const s = storage && storage.getItem(SAVE_KEY);
+    if (!s) return null;
+    const bytes = Uint8Array.from(atob(s), (c) => c.charCodeAt(0));
+    return bytes.length === SAVE_SIZE ? bytes : null;
+  } catch { return null; }
+}
+
+/** Keep the save (SAVE_SIZE bytes) in storage. */
+export function storeSave(storage, bytes) {
+  let s = '';
+  for (const b of bytes.subarray(0, SAVE_SIZE)) s += String.fromCharCode(b);
+  try { storage.setItem(SAVE_KEY, btoa(s)); } catch { /* storage full or off: the save is lost */ }
 }
 
 /** The top menu's modes (menu state +4) and the city each starts. */
@@ -206,12 +228,17 @@ export class DreamcastMenu {
     this.background = 0xFF000000;
     this.held = 0;
     this.frames = 0;
-    // The settings: the boot's set-up copies the defaults in (gdc_PlaySong's volume reads +4).
+    // The settings: the boot's set-up (BupInit) copies the defaults in (gdc_PlaySong's volume
+    // reads +4) and starts the four players' records: the default name, no box cleared.
+    this.call(FN.bupInit);
     for (let i = 0; i < 16; i++) cpu.w8(G.options + i, cpu.r8(G.optionDefaults + i));
+    // The memory card's save (the game's, see DreamcastCar.save()): the settings and the
+    // records - the boxes cleared (CheckRanking sets them) are what CheckBoxFlag unlocks by.
+    if (opts.save) cpu.ram.set(opts.save.subarray(0, SAVE_SIZE), G.options & 0x00FFFFFF);
     // +14: how many players' records are in use (BupInit starts it at 0, a new name adds
     // one). At 0 menuCrazyBoxHandler locks every box; one player (the default name, the
-    // records at 0x0C288200 all zero) opens the boxes CheckBoxFlag allows: 1-1 to 1-3 at first.
-    cpu.w8(G.options + 14, 1);
+    // records at 0x0C288200) opens the boxes CheckBoxFlag allows: 1-1 to 1-3 at first.
+    if (!cpu.r8(G.options + 14)) cpu.w8(G.options + 14, 1);
     this.motions = !!opts.motions;
     if (opts.motions) {
       cpu.load(MOTIONS, opts.motions);

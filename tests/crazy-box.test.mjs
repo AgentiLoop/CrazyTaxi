@@ -6,16 +6,17 @@ import assert from 'node:assert/strict';
 import { existsSync, readFileSync } from 'node:fs';
 import { DreamcastCar, CRAZY_BOX, carFiles, courseModeOf } from '../src/dc-car.js';
 import { modelFile } from '../src/box-objects.js';
+import { DreamcastMenu, PAD, SAVE_SIZE } from '../src/dc-menu.js';
 
 const ROOT = new URL('../local-assets/', import.meta.url);
 const have = existsSync(new URL('disc/COLDC3.BIN', ROOT));
 const IDLE = { steer: 0, accel: 0, brake: 0, drive: false, reverse: false };
 
-function make(miniGame) {
+function make(miniGame, save = null) {
   const files = carFiles(courseModeOf(CRAZY_BOX, miniGame));
   const data = {};
   for (const k in files) data[k] = readFileSync(new URL(files[k], ROOT));
-  return new DreamcastCar(data, { city: CRAZY_BOX, miniGame });
+  return new DreamcastCar(data, { city: CRAZY_BOX, miniGame, save });
 }
 
 test('game 15 is in the Arcade city, the others in the Crazy Box course', () => {
@@ -145,5 +146,35 @@ test('Crazy Balloons: the 20 balloons are drawn; driving into one pops it and co
   assert.ok(hit, 'a balloon was hit (drawn 4.8 times, POLDC3 0x1998)');
   car.update(IDLE);
   assert.equal(count(), 19);
+});
+
+test('a clear is filed in the records (CheckRanking); the save opens 1-4 in the menu once 1-1 to 1-3 are cleared', { skip: !have }, () => {
+  const START_EXCELLENT = 0x0C05ABE8;   // what each game calls when it is cleared
+  let save = null;
+  for (const g of [0, 1, 2]) {
+    const car = make(g, save);
+    let n = 0;
+    for (; n < 1500 && !car.crazyBox().over; n++) {
+      if (n === 300) car.call(START_EXCELLENT);
+      car.update(n > 190 ? { ...IDLE, accel: 0.3 } : IDLE);
+    }
+    const box = car.crazyBox();
+    assert.ok(box.over && box.excellent && !box.fault, `game ${g}: ${JSON.stringify(box)}`);
+    assert.ok(n > 300 + 200 && n < 300 + 230, `End_Excellent ends it after the record window's 210 frames (${n})`);
+    save = car.save();
+    assert.equal(save.length, SAVE_SIZE);
+    assert.equal(save[0x14], (2 << g) - 1, `player 1's boxes cleared (+0x14) after game ${g}`);
+  }
+  const box4 = (s) => {
+    const menu = new DreamcastMenu(new Uint8Array(readFileSync(new URL('disc/1ST_READ.BIN', ROOT))), { save: s });
+    const press = (b, settle = 60) => { menu.update(b); for (let i = 0; i < settle && menu.update(0); i++); };
+    for (let i = 0; i < 90; i++) menu.update(0);
+    press(PAD.DOWN); press(PAD.DOWN); press(PAD.A, 100);   // CRAZY BOX
+    for (let i = 0; i < 5; i++) press(PAD.DOWN);           // CABBIE, 1-1, 1-2, 1-3, 1-4
+    press(PAD.A, 200);
+    return menu.result;
+  };
+  assert.equal(box4(save)?.game, 3, 'with the save: box 1-4 (Crazy Bowling)');
+  assert.notEqual(box4(null)?.game, 3, 'without it 1-4 stays locked');
 });
 

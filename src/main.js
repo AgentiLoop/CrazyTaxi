@@ -18,6 +18,7 @@ import { CabShadow } from './cab-shadow.js';
 import { NavArrow } from './nav-arrow.js';
 import { GameAudio } from './audio.js';
 import { MenuView } from './menu-view.js';
+import { loadSave, storeSave } from './dc-menu.js';
 import { BoxObjects } from './box-objects.js';
 
 const ASSETS = 'local-assets/';
@@ -137,7 +138,7 @@ async function main() {
   cab.add(cabModel);
   scene.add(cab);
 
-  car = new DreamcastCar(data, { city: GAME_NO, miniGame: MINI_GAME, cab: CAB, rules: RULES, audio });
+  car = new DreamcastCar(data, { city: GAME_NO, miniGame: MINI_GAME, cab: CAB, rules: RULES, audio, save: loadSave(localStorage) });
   car.aspect = camera.aspect;
   // The Crazy Box course (BINC3) holds every game's pieces in the same space: show this game's
   // (car.courseEntries(), the ones gdc_CourseStartLoadReq loads).
@@ -246,6 +247,7 @@ async function main() {
     if (CRAZY && tryAgainLabel.hidden) {
       const box = car.crazyBox();
       if (box.over) {
+        storeSave(localStorage, car.save());   // the records the game filed (a clear unlocks the next boxes)
         tryAgainLabel.innerHTML = `${box.excellent ? 'EXCELLENT!' : 'FAULT'}<br>TRY AGAIN?<br><small>A (Z / Enter) yes &nbsp; B (X / Esc) no</small>`;
         tryAgainLabel.hidden = false;
       }
