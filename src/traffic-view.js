@@ -13,6 +13,9 @@
 // of the scene add 1 to the stencil, its back faces in front subtract 1, then
 // the pixels left non-zero are darkened (and the stencil cleared). Needs a
 // renderer with stencil: true (src/main.js). The darkness is a guess (50%).
+// The darkening pass is fogged: the game darkens the shaded colour before the
+// fog is mixed in, so a far shadow fades with the road (black blended at 50%
+// after fogging would stay a grey box on the fogged road).
 import * as THREE from 'three';
 import { loadGltf, makeUnlit, toUnlit, blendPass } from './scene.js';
 
@@ -26,7 +29,7 @@ const SHADOW_PASSES = [
   [volume(THREE.FrontSide, THREE.IncrementWrapStencilOp), 10],
   [volume(THREE.BackSide, THREE.DecrementWrapStencilOp), 10],
   [new THREE.MeshBasicMaterial({
-    color: 0x000000, opacity: 0.5, transparent: true, depthWrite: false, depthTest: false, fog: false,
+    color: 0x000000, opacity: 0.5, transparent: true, depthWrite: false, depthTest: false, fog: true,
     stencilWrite: true, stencilRef: 0, stencilFunc: THREE.NotEqualStencilFunc, stencilZPass: THREE.ZeroStencilOp,
   }), 11],
 ];
