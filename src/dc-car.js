@@ -784,7 +784,10 @@ export class DreamcastCar {
         const total = fare + timeMoney + tips;
         cpu.w32(g + 0x20, Math.min(CASH_CAP, cpu.r32(g + 0x20) + total));
         cpu.w32(g + 0x2C, 0); cpu.w32(g + 0x28, 0); cpu.w32(g + 0x30, 0);
-        this.paid = { rating, fare, timeMoney, tips, total, bonus: [0, 120, 300][rating] };
+        // The drop-off's time bonus, straight onto the clock (frames): NORMAL +30 s, FAST +45 s, SPEEDY +60 s.
+        const bonus = [1800, 2700, 3600][rating];
+        cpu.w32(g + 0xC, cpu.rs32(g + 0xC) + bonus);
+        this.paid = { rating, fare, timeMoney, tips, total, bonus };
         this.events.push({ type: 'out', ...this.paid });
       } else {
         this.events.push({ type: 'eject' });

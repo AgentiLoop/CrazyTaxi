@@ -71,7 +71,7 @@ for (const [city, name] of [[0, 'car-trace-arcade.json'], [1, 'car-trace-origina
     assert.equal(car.carCount, trace.start.carEntryNum);
     assert.equal(trace.countdown, 366);
     const teleports = new Map(trace.teleports.map((t) => [t.frame, t.to]));
-    let drawn = 0, live = 0, people = 0, nearZero = 0;
+    let drawn = 0, live = 0, people = 0, nearZero = 0, bonusTime = 0;
     const events = [];
     for (let f = 0; f < trace.frames.length; f++) {
       const fr = trace.frames[f], inp = fr.input;
@@ -97,6 +97,9 @@ for (const [city, name] of [[0, 'car-trace-arcade.json'], [1, 'car-trace-origina
         people: car.people.map((p) => ({ ...p, matrix: plain(p.matrix) })),
         sounds: car.sounds, voices: car.voices, music: car.musicCue,
       };
+      // The port's drop-off time bonus (+30/+45/+60 s on the clock) is not the simulator's.
+      for (const e of car.events) if (e.type === 'out') bonusTime += e.bonus;
+      got.gs.time -= bonusTime;
       const { input, events: wantEvents, ...want } = fr;
       nearZero += assertSame(got, want, `frame ${f}`);
       assert.deepEqual(car.events.map((e) => e.type), wantEvents, `frame ${f}: events`);
@@ -282,7 +285,7 @@ for (const [city, name] of [[0, 'arcade'], [1, 'original']]) {
     const out = log.out;
     assert.ok(out, 'delivered');
     assert.equal(out.rating, 2);
-    assert.equal(out.bonus, 300);
+    assert.equal(out.bonus, 3600);   // the port's SPEEDY bonus: +60 s on the clock
     assert.equal(out.total, out.fare + out.timeMoney + out.tips);
     assert.equal(out.gs.cash, out.total);
     assert.equal(out.gs.delivered, 1);
