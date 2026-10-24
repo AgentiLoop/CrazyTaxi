@@ -9,7 +9,8 @@ import { KIND_NAMES } from './collision.js';
 import { DreamcastCar, STEP, WHEEL_RADIUS, CRAZY_BOX, carFiles, courseModeOf } from './dc-car.js';
 import { Input } from './input.js';
 import { CITIES } from './start.js';
-import { loadGltf, makeUnlit, GameCamera, packView } from './scene.js';
+import { loadGltf, makeUnlit, GameCamera, packView, HIRES } from './scene.js';
+import { batchStatic } from './static-batch.js';
 import { PeopleView } from './people.js';
 import { Hud, HUD_CSS } from './hud.js';
 import { CartoonDigits } from './cartoon-digits.js';
@@ -150,6 +151,9 @@ async function main() {
     const run = `Crazy Box MiniGame_No ${MINI_GAME}`;
     propsGltf.scene.traverse((o) => { if (o.userData.runs) o.visible = o.userData.runs.includes(run); });
   }
+  // The city and its set objects merged into a few draw calls (src/static-batch.js): the
+  // 60 fps need it. Off with ?batch=0, and with the hi-res pack (its textures don't atlas).
+  const batched = params.get('batch') !== '0' && !HIRES ? batchStatic(scene, [cityGltf.scene, propsGltf.scene], renderer) : null;
   // Browsers play nothing before a gesture: the first key or click starts the sound
   // (a song cued during the countdown picks up where it would be).
   for (const ev of ['keydown', 'pointerdown']) addEventListener(ev, () => audio.start(), { once: true });
@@ -308,7 +312,7 @@ async function main() {
   // For tests and probes.
   window.__game = {
     car, scene, camera, gameCamera, renderer, cityName, wheelRadius: WHEEL_RADIUS, stops,
-    people, traffic, cabShadow, navArrow, restart, audio, boxObjects,
+    people, traffic, cabShadow, navArrow, restart, audio, boxObjects, batched,
   };
 }
 

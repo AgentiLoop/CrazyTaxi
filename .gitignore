@@ -12,3 +12,5 @@ dist/
 local-assets/
 __pycache__/
 *.pyc
+mac/.build/
+mac/build/

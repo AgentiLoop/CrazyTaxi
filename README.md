@@ -13,6 +13,22 @@ npm run dev        # http://127.0.0.1:5173/  (add ?city=original for the Origina
 npm test           # node --test tests/*.test.mjs (skips data tests without local-assets/)
 ```
 
+### The Mac app
+
+`mac/` is a macOS app (Swift, one `WKWebView`) that plays the built game without a
+browser or a dev server: it serves `dist/` and `local-assets/` from disk over its own
+URL scheme.
+
+```sh
+npm run build && mac/build.sh     # -> mac/build/CrazyTaxi.app (finds the repo folder by itself; --root PATH to point elsewhere)
+tools/mac-probe.sh 30             # unattended 60 fps check in the app: one JSON line a second, then a summary
+```
+
+The world (city and set objects) is merged into a few draw calls at load
+(`src/static-batch.js`: one texture atlas, one mesh per cell and way of drawing) -
+~300 draw calls a frame instead of ~3,000, 60 fps in the app on an M4 at 2560 x 1920
+where it was 40-47. `?batch=0` draws the single meshes again (the hi-res pack does too).
+
 Keys: arrows / WASD drive and steer, X = Drive gear (B), Z = Reverse gear (A),
 R restart. Stop beside a customer (inside their circle) to pick them up, stop at
 the landmark (the arrow and picture show where) to drop them off.
