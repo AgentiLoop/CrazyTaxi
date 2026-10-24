@@ -175,13 +175,13 @@ export const HUD_CSS = DIGITS_CSS + `
 #hud-rider .cd + .cd { margin-left: -0.04em; }
 #hud-rider.yellow { color: #ffe81e; } #hud-rider.red { color: #ff4040; }
 /* The fare board (hudDrawFareFrame: around 532, 96): the cash and the fare on white drums. */
-#hud-board { position: absolute; right: 1.67cqh; top: 1.67cqh; width: 38.67cqh; text-align: center; }
+#hud-board { position: absolute; right: 1.67cqh; top: 1.67cqh; width: 38.67cqh; max-width: calc(100cqw - 3.34cqh); text-align: center; }   /* never past the edge in a narrow (tall) window */
 #hud-board img { display: block; width: 100%; }
 #hud-board .foot { width: 92%; margin: 0 auto; }
 #hud-board .fare { width: 82%; margin: 0.4cqh 0 0 auto; }
 /* One flush strip of drums under the header, as wide as the header between its red lamps. */
 #hud-board .drums { display: flex; width: 88%; margin: -0.2cqh auto 0; font-size: 3.6cqh; line-height: 1.2; text-shadow: none; border: 0.25cqh solid #1a1a1a; border-radius: 0.5cqh; overflow: hidden; box-shadow: 0 0.3cqh 0.5cqh rgba(0,0,0,.6); }
-#hud-board .fare .drums { width: 94%; font-size: 3.9cqh; }
+#hud-board .fare .drums { width: 94%; margin: -0.2cqh calc(7.317% - 0.25cqh) 0 calc(-1.317% - 0.25cqh); font-size: 3.9cqh; }   /* right edge flush with the total's drums: 6% of the board (7.317% of the fare block) minus the border */
 #hud-board .drums span { flex: 1 1 0; min-width: 0; color: #111; font-weight: 900; background: linear-gradient(#5e4b2c 0%, #d8cba0 16%, #fffbea 48%, #e6dbb4 74%, #5e4b2c 100%); box-shadow: inset -0.04em 0 0 #3a3020, inset 0.03em 0 0 rgba(255,255,255,.5); }
 #hud-board .drums span.cur { flex-grow: 1.1; }
 #hud-board .drums span.dot { flex-grow: 0.45; }
