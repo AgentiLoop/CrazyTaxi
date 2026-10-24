@@ -12,7 +12,7 @@
 // keeps its 4:3 look in the corners of a wider window.
 import { formatMoney } from './dc-car.js';
 import { DIGITS_CSS, gameTimeText } from './cartoon-digits.js';
-import { HIRES, PACK, hiresLink } from './scene.js';
+import { HIRES, PACK, hiresLink, releaseImage } from './scene.js';
 
 export const RATING_NAMES = ['NORMAL', 'FAST', 'SPEEDY'];
 const LANDMARK_DIR = { 'LANDDC1.AFS': 'landmarks/LANDDC1/', 'LANDDC2.AFS': 'landmarks/LANDDC2/' };
@@ -28,8 +28,8 @@ export class Hud {
     root.innerHTML = `
       <div id="hud-time"><div id="hud-clock"><span id="hud-clock-main"></span><span id="hud-clock-sub"></span></div></div>
       <div id="hud-board">
-        <img class="head" src="${BOARD_PACK}0177.png" alt="TOTAL EARNED"><div class="drums" id="hud-cash"></div><img class="foot" src="${BOARD_PACK}0178.png" alt="">
-        <div class="fare"><img class="head" src="${BOARD_PACK}0017.png" alt="FARE"><div class="drums" id="hud-fare"></div><img class="foot" src="${BOARD_PACK}0178.png" alt=""></div>
+        <img class="head" src="${releaseImage(BOARD_PACK + '0177.png')}" alt="TOTAL EARNED"><div class="drums" id="hud-cash"></div><img class="foot" src="${releaseImage(BOARD_PACK + '0178.png')}" alt="">
+        <div class="fare"><img class="head" src="${releaseImage(BOARD_PACK + '0017.png')}" alt="FARE"><div class="drums" id="hud-fare"></div><img class="foot" src="${releaseImage(BOARD_PACK + '0178.png')}" alt=""></div>
       </div>
       <div id="hud-bar"><div id="hud-bar-fill"></div></div>
       <div id="hud-rider" hidden></div>
@@ -44,7 +44,7 @@ export class Hud {
     this.goTimer = 0;
     // The D / R gear box (Put_GearBox: SPRCOMM sprites 17 and 18 centred at 582, 420), the
     // pack's picture while the pack is on (?hires=1 or H; the extracted PNGs are upside down: CSS flips them).
-    this.gearSrc = GEAR_SPRITES.map((png) => assets + png);
+    this.gearSrc = GEAR_SPRITES.map((png) => releaseImage(assets + png));
     this.gear = -1;
     this.landmarkPng = null;
     this.hiresShown = 0;
@@ -54,7 +54,7 @@ export class Hud {
   /** The gear box and the destination picture from the pack (HIRES on) or the game's PNGs. */
   showHires() {
     this.hiresShown = HIRES;
-    this.gearSrc = GEAR_SPRITES.map((png) => this.assets + png);
+    this.gearSrc = GEAR_SPRITES.map((png) => releaseImage(this.assets + png));
     this.el.gear.classList.remove('pack');
     this.gear = -1;
     Promise.all(GEAR_SPRITES.map(hiresLink)).then((urls) => {
@@ -69,7 +69,7 @@ export class Hud {
   showLandmark(png) {
     const img = this.el.landmark;
     this.landmarkPng = png;
-    img.src = this.assets + png;
+    img.src = releaseImage(this.assets + png);
     img.classList.remove('pack');
     hiresLink(png).then((url) => {   // the texture pack's picture, if it has one
       if (url && HIRES && this.landmarkPng === png) { img.src = url; img.classList.add('pack'); }

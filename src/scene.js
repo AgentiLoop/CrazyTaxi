@@ -118,6 +118,8 @@ export function releaseGltf(gltf) {
 // alpha), swapped in as GPU-compressed textures whatever ?hires=N says.
 const RELEASE = (import.meta.env && import.meta.env.VITE_ASSETS) || '';
 export const PACK = RELEASE ? RELEASE.replace(/[^/]+\/?$/, 'hires/') : 'local-assets/texture_pack/';
+/** A picture's URL by its PNG name: an asset release has it as a lossless WebP (tools/build_asset_release.mjs). */
+export const releaseImage = (url) => (RELEASE ? url.replace(/\.png$/, '.webp') : url);
 
 /** The longest side a pack image is drawn at for a page's query string (0 = no pack). */
 export function hiresCap(search) {

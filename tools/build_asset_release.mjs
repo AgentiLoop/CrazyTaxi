@@ -13,6 +13,10 @@
 //   - ktx2: the models' own textures (textures/*.png and the PNGs inside the .glb files) become
 //     KTX2 (Basis Universal ETC1S, tools/ktx2_release.py) under KHR_texture_basisu, with the
 //     transcoder in basis/; run it after copy, which puts the PNG versions back.
+//   - webp: every PNG left (the menu / HUD sprites, the destination pictures, the fonts, in
+//     lowres/ and hires/) becomes a lossless WebP (cwebp -lossless -exact: alpha, and the
+//     colour under fully see-through texels, kept); the hires manifest's links follow. The
+//     game asks for them by their PNG names (src/scene.js releaseImage). Run it after hires.
 //   - brotli: every .glb/.json/.BIN/.svg/.wav/.ktx2 gets a <name>.br next to it (quality 11), which
 //     vite.config.js's middleware serves with Content-Encoding: br. This is the meshes' shrink:
 //     meshopt without quantizing (the geometry must stay exact) makes the glTF larger once
@@ -20,7 +24,7 @@
 // Usage: node tools/build_asset_release.mjs [--only audio,...]
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { copyFileSync, cpSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
+import { copyFileSync, cpSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { dirname, join, relative } from 'node:path';
 import { cpus } from 'node:os';
 import { brotliCompress, constants } from 'node:zlib';
@@ -117,6 +121,34 @@ async function ktx2Stage() {
   const { stdout } = await run('python3', [join(ROOT, 'tools/ktx2_release.py'), '--release', LOW], { cwd: ROOT, maxBuffer: 1 << 24 });
   process.stdout.write(stdout);
 }
+
+async function webpStage() {
+  const pngs = [];
+  const walk = (d) => {
+    for (const n of readdirSync(d)) {
+      const p = join(d, n);
+      if (statSync(p).isDirectory()) walk(p);
+      else if (n.endsWith('.png')) pngs.push(p);
+    }
+  };
+  walk(LOW);
+  if (existsSync(HIGH)) walk(HIGH);
+  let raw = 0, packed = 0;
+  await pool(pngs, async (f) => {
+    const out = f.replace(/\.png$/, '.webp');
+    await run('cwebp', ['-quiet', '-lossless', '-exact', '-z', '9', '-mt', f, '-o', out]);
+    raw += statSync(f).size;
+    packed += statSync(out).size;
+    unlinkSync(f);
+  });
+  const manifest = join(HIGH, 'manifest.json');
+  if (existsSync(manifest)) {
+    const m = JSON.parse(readFileSync(manifest, 'utf8'));
+    for (const t of m.textures) if (t.link) t.link = t.link.replace(/\.png$/, '.webp');
+    writeFileSync(manifest, JSON.stringify(m, null, 1));
+  }
+  console.log(`webp: ${pngs.length} PNGs, ${(raw / 1e6).toFixed(1)} -> ${(packed / 1e6).toFixed(1)} MB`);
+}
 const BROTLI = /\.(glb|json|BIN|svg|wav|ktx2)$/;
 
 async function brotliStage() {
@@ -157,6 +189,7 @@ if (stage('copy')) copyStage();
 if (stage('ktx2')) await ktx2Stage();
 if (stage('audio')) await audioStage();
 if (stage('hires')) await hiresStage();
+if (stage('webp')) await webpStage();
 if (stage('brotli')) await brotliStage();
 for (const d of readdirSync(OUT)) {
   if (statSync(join(OUT, d)).isDirectory() && !d.startsWith('.')) console.log(`${relative(ROOT, join(OUT, d))}: ${(size(join(OUT, d)) / 1e6).toFixed(1)} MB`);

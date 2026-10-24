@@ -5,7 +5,7 @@
 // the PowerVR modulates a texture (texture x colour, alpha x alpha). With ?hires=1 (or H) a sprite
 // is drawn from the hi-res texture pack's image once it has loaded (src/scene.js hiresImage);
 // its size and layout stay the game's.
-import { HIRES, hiresImage } from './scene.js';
+import { HIRES, hiresImage, releaseImage } from './scene.js';
 const SCREEN_W = 640, SCREEN_H = 480;
 // The driver figure's 1/z (SelectView): ~1/33, between the select's art and its text.
 const FIGURE_DEPTH = 1 / 33;
@@ -344,7 +344,7 @@ export class MenuView {
       const path = this.paths.get(n);
       if (!path) return null;
       im = new Image();
-      im.src = this.assets + 'sprites/' + path;
+      im.src = releaseImage(this.assets + 'sprites/' + path);
       this.images.set(n, im);
     }
     return im.complete && im.naturalWidth ? im : null;
