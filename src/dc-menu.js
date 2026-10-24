@@ -67,6 +67,7 @@ const G = {
   selectState: 0x0C2A5148,            // nd_CarSelExec: 0 choosing, 1 decided, 2/3 the pick motion, 4 done
   view: 0x0C2B0830,                   // the view matrix (column major)
   menuFrom: 0x0C29EF30,               // GotoMenu: the MainMode and (+4) sub mode the menu was entered from
+  cabbie: 0x0C29EF48,                 // the Crazy Box screen's CABBIE (its handler copies it into the cab every frame)
   options: 0x0C2881F0, optionDefaults: 0x0C09C5C0,   // the settings (+4: the music volume, 0-8) and their defaults
 };
 const MOTIONS = 0x0C880000;           // MOTDC.BIN's load address
@@ -76,6 +77,7 @@ const FN = {
   pfInit: 0x0C03022C, initMenu: 0x0C040FF8, menu: 0x0C0410B0,
   advertise: 0x0C02BB68,              // MainMode 0's handler (AdvExecState): the sub mode's state from the table at 0x0C08A4B4
   menuSetMode: 0x0C03EB32,
+  setScreen: 0x0C03A87C,              // SetScreen(n): the menu's screen state (4 when a game goes back to the menu)
   sprPut: 0x0C07D018, putc: 0x0C03055E,
   fileLoad: 0x0C02D4E2,
   bupInit: 0x0C039994,                // the boot's set-up: the settings' defaults, the players' records, the rankings
@@ -244,8 +246,27 @@ export class DreamcastMenu {
       cpu.load(MOTIONS, opts.motions);
       this.call(FN.motionInit);
     }
-    if (opts.title) this.title();
+    if (opts.box !== undefined) this.box(opts.box, opts.cab || 0);
+    else if (opts.title) this.title();
     else this.init();
+  }
+
+  /**
+   * The Crazy Box's box screen as a box's end leaves for it (windowGoMenu / gameState2: MainMode
+   * 3, SetMenuClass(1) - the menu's depth 1 under CRAZY BOX - and SetScreen(4)), the cursor on
+   * the game's box (item game + 2); callTryAgain kept the game's MainMode and sub mode as the
+   * mode the menu was entered from; the CABBIE stays the driver that played.
+   */
+  box(game, cab = 0) {
+    const cpu = this.cpu;
+    this.init();
+    cpu.w32(G.menu, 1);
+    cpu.w32(G.menu + 4, 2);
+    cpu.w32(G.menu + 8, game + 2);
+    cpu.w32(G.menuFrom, 1);
+    cpu.w32(G.menuFrom + 4, 1);
+    cpu.w32(G.cabbie, cab);
+    this.call(FN.setScreen, { r4: 4 });
   }
 
   /** InitSys's part: the language, the matrix stacks, the text printer. */
@@ -377,25 +398,34 @@ export class DreamcastMenu {
     this.draws.push(readSprite(this.cpu, p));
   }
 
-  /** pfPutc's quad for character c (before it runs: the pen is where this glyph goes). */
+  /** pfPutc's quad for character c (see readGlyph). */
   glyph(c) {
-    if (c < 32 || c > 127) return;
-    const cpu = this.cpu;
-    const g = cpu.r32(G.glyphs) + (c - 32) * 16;
-    const left = cpu.rf(g), width = cpu.rf(g + 4), row = cpu.r32(g + 8);
-    if (left < 0) return;                         // a space: the pen only moves
-    const x = cpu.rf(G.penX), y = cpu.rf(G.penY);
-    const scale = cpu.rf(G.fontScale), height = cpu.rf(G.fontHeight), uv = cpu.rf(G.fontUV);
-    const argb = cpu.r32(G.textColour);
-    this.draws.push({
-      kind: 'glyph', char: String.fromCharCode(c),
-      texture: cpu.r32(G.fontTexture + 4 * cpu.r32(G.font)),
-      x, y, width: scale * width, height,
-      depth: cpu.rf(G.textZ),
-      uLeft: left * uv, uRight: (left + width) * uv,
-      vTop: cpu.rf(G.glyphVTop + 4 * row), vBottom: cpu.rf(G.glyphVBottom + 4 * row),
-      alpha: (argb >>> 24) / 255,
-      colour: [((argb >>> 16) & 255) / 255, ((argb >>> 8) & 255) / 255, (argb & 255) / 255],
-    });
+    const g = readGlyph(this.cpu, c);
+    if (g) this.draws.push(g);
   }
+}
+
+/**
+ * pfPutc's quad for character c as MenuView draws it, read before pfPutc runs (the pen is
+ * where this glyph goes); null for a space or a character outside the font. The menu's text
+ * and the game's (the Crazy Box's windows, src/dc-car.js).
+ */
+export function readGlyph(cpu, c) {
+  if (c < 32 || c > 127) return null;
+  const g = cpu.r32(G.glyphs) + (c - 32) * 16;
+  const left = cpu.rf(g), width = cpu.rf(g + 4), row = cpu.r32(g + 8);
+  if (left < 0) return null;                    // a space: the pen only moves
+  const x = cpu.rf(G.penX), y = cpu.rf(G.penY);
+  const scale = cpu.rf(G.fontScale), height = cpu.rf(G.fontHeight), uv = cpu.rf(G.fontUV);
+  const argb = cpu.r32(G.textColour);
+  return {
+    kind: 'glyph', char: String.fromCharCode(c),
+    texture: cpu.r32(G.fontTexture + 4 * cpu.r32(G.font)),
+    x, y, width: scale * width, height,
+    depth: cpu.rf(G.textZ),
+    uLeft: left * uv, uRight: (left + width) * uv,
+    vTop: cpu.rf(G.glyphVTop + 4 * row), vBottom: cpu.rf(G.glyphVBottom + 4 * row),
+    alpha: (argb >>> 24) / 255,
+    colour: [((argb >>> 16) & 255) / 255, ((argb >>> 8) & 255) / 255, (argb & 255) / 255],
+  };
 }

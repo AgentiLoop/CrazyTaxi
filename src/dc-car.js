@@ -86,7 +86,7 @@
 // 2 pi * 0.006 km/h). Headings: forward = (sin h, 0, cos h).
 
 import { SH4 } from './sh4.js';
-import { readSprite, SAVE_SIZE } from './dc-menu.js';
+import { readSprite, readGlyph, SAVE_SIZE } from './dc-menu.js';
 
 export const STEP = 1 / 60;
 export const WHEEL_RADIUS = 2.964;   // the drawn wheel (cab_0.glb); the physics uses +0x12C = 2.87
@@ -122,6 +122,8 @@ const G = {
   courseLineTbl: 0x0C0C2B64,          // course index words by Game_No + MiniGame_No
   stick: 0x0C1EC014, accel: 0x0C1EC018, brake: 0x0C1EC01C,
   buttonB: 0x0C1EBF87, buttonA: 0x0C1EBF88,
+  taxiSW: 0x0C1EBF6C,                 // the pad: +0 held, +4 pressed, +8 released, +0xC last held, +0x10/+0x16 stick (0x8000 = centre)
+  language: 0x0C29EEC8,               // 0 Japanese, else English
   carEntryNum: 0x0C2A2168, carListCount: 0x0C2A2188, carList: 0x0C2A218C,   // up to 100 cars
   carControlArea: 0x0C29F7D8, trafficLevel: 0x0C29F82C,
   gs: 0x0C1EC4A8, gameState: 0x0C1EC50C, gameCounter: 0x0C1EC510,
@@ -160,8 +162,17 @@ const FN = {
   // TRY AGAIN window (SetWindow(2)), voice 0x275, the songs stopped. The window's code does
   // not run here, so the game calls it again every frame: only the first call runs.
   callTryAgain: 0x0C03FC9A,
+  // The window it opens (SetWindow(2): the table 0x0C09D340, windowTryAgain 0x0C03DCFE and its
+  // two items, YES -> windowRetry, NO -> windowGoMenu) runs as Pause_ExecRenderTexture1st
+  // runs it while the game stands still: menuReadPad(1) (the pad from TaxiSW), ExecWindow.
+  // windowRetry / windowGoMenu are caught (`choice`): they would reload the course or the menu.
+  menuReadPad: 0x0C03AB56, execWindow: 0x0C03AAC0,
+  windowRetry: 0x0C03D356, windowGoMenu: 0x0C03D386,
+  // The text printer (InitSys: pfInit(0)) and pfPutc, every character the windows print.
+  pfInit: 0x0C03022C, putc: 0x0C03055E,
+  soundCommand: 0x0C07EA8C,           // the menus' cursor and decide sounds: the sound driver's command ring
   // End_Excellent: the clear's record window has been up 210 frames (Exec_Excellent) - the
-  // game moves on (sub mode 2) and is over too.
+  // game moves on (sub mode 2: gameState2 goes back to the Crazy Box's menu) and is over too.
   endExcellent: 0x0C05AC28,
   // BupInit (the boot's set-up): the settings' defaults, the four players' records
   // (saveBufferInit: the default name, no box cleared, every rank empty), the rankings'
@@ -273,6 +284,9 @@ export class DreamcastCar {
     if (opts.city === CRAZY_BOX) {
       cpu.hooks.delete(FN.putReadySetGo);
       cpu.hooks.set(FN.sprPut, (c) => { this.sprites.push(readSprite(c, c.r[4] >>> 0)); return 0; });
+      // The windows' text (the TRY AGAIN window's, the records'): pfPutc's glyphs with the sprites.
+      cpu.hooks.set(FN.putc, (c) => { const g = readGlyph(c, c.r[4] << 24 >> 24); if (g) this.sprites.push(g); return false; });
+      cpu.hooks.set(FN.soundCommand, (c) => { const word = c.r[4] >>> 0; this.sounds.push({ word, channel: -1 }); if (this.audio) this.audio.sound(word); return 0; });
       cpu.hooks.set(FN.objPutTrnsl, (c) => {
         const matrix = new Float32Array(16);
         for (let i = 0; i < 16; i++) matrix[i] = c.xf(i);
@@ -361,7 +375,9 @@ export class DreamcastCar {
       this.tryAgain = true;
       return false;
     });
-    cpu.hooks.set(FN.endExcellent, () => { this.tryAgain = this.cleared = true; return false; });
+    cpu.hooks.set(FN.endExcellent, () => { this.tryAgain = this.cleared = true; this.choice = 'menu'; return false; });
+    cpu.hooks.set(FN.windowRetry, () => { this.choice = 'retry'; return 0; });
+    cpu.hooks.set(FN.windowGoMenu, () => { this.choice = 'menu'; return 0; });
     this.audio = opts.audio || null;
     this.aspect = DC_ASPECT;              // the picture's width / height the culling is for (main.js: the window's)
     this.city = opts.city || 0;
@@ -389,6 +405,11 @@ export class DreamcastCar {
     for (let i = 0; i < 16; i++) cpu.w8(G.options + i, cpu.r8(G.optionDefaults + i));
     // The memory card's save (the settings and the records, see save()), when there is one.
     if (opts.save) cpu.ram.set(opts.save.subarray(0, SAVE_SIZE), G.options & 0x00FFFFFF);
+    // The Crazy Box's windows print with the text printer: InitSys's language (English) and pfInit(0).
+    if (this.city === CRAZY_BOX) {
+      cpu.w32(G.language, 1);
+      this.call(FN.pfInit, { r4: 0 });
+    }
     // CourseTableSet(city) and init_GameSystem's course line.
     const table = cpu.r32(G.courseDirectory + this.courseMode * 8), count = cpu.r32(G.courseDirectory + this.courseMode * 8 + 4);
     cpu.w32(G.courseTable, table); cpu.w32(G.courseCount, count);
@@ -433,6 +454,8 @@ export class DreamcastCar {
     const cpu = this.cpu;
     this.tryAgain = false;
     this.cleared = false;
+    this.choice = null;   // the end's choice: 'retry' (the TRY AGAIN window's YES) or 'menu' (NO, or after a clear)
+    this.held = 0;
     this.call(FN.initMatrixStack, { r4: MATRIX_STACK, r5: MATRIX_STACK_SIZE });
     cpu.w32(G.heapPtr, HEAP);
     this.call(FN.initHeap, { r4: HEAP, r5: HEAP_SIZE });
@@ -669,6 +692,32 @@ export class DreamcastCar {
     const cpu = this.cpu;
     const flags = cpu.r16(0x0C2A6E24);
     return { flags, fault: !!(flags & 0x20), excellent: !!(flags & 0x10) || this.cleared, reason: cpu.r32(0x0C2A6E28), score: cpu.rs32(0x0C2A6DEC), over: this.tryAgain };
+  }
+
+  /**
+   * One frame of the window callTryAgain opened (the game stands still, as gameStateDrive
+   * does while Pause_ExecRenderTexture1st runs it): the pad into TaxiSW, menuReadPad(1),
+   * ExecWindow (windowTryAgain: the window opening, the cursor, YES / NO; A on YES ->
+   * windowRetry, A on NO or B -> windowGoMenu), the voices. Afterwards `sprites` holds the
+   * window's sprites and text and `choice` is set once a choice is made.
+   * @param {number} buttons the pad bits held this frame (dc-menu's PAD)
+   */
+  windowFrame(buttons = 0) {
+    const cpu = this.cpu, sw = G.taxiSW;
+    this.sprites = [];    // the game's models (`objects`) stay as they were drawn
+    this.sounds = [];
+    this.voices = [];
+    cpu.w32(sw + 4, buttons & ~this.held);
+    cpu.w32(sw + 8, this.held & ~buttons);
+    cpu.w32(sw + 12, this.held);
+    cpu.w32(sw, buttons);
+    cpu.w16(sw + 0x10, 0x8000);
+    cpu.w16(sw + 0x16, 0x8000);
+    this.held = buttons;
+    this.call(FN.menuReadPad, { r4: 1 });
+    this.call(FN.execWindow);
+    this.call(FN.voiceExecute);
+    cpu.w32(G.frameCounter, (cpu.r32(G.frameCounter) + 1) >>> 0);
   }
 
   /**

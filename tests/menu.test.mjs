@@ -163,3 +163,14 @@ test('CRAZY BOX: the boxes 1-1 to 1-3 are open, CABBIE picks the driver, a box r
   press(menu, PAD.A, 200);
   assert.deepEqual(menu.result, { mode: 2, item: 4, game: 2, cab: 2 });
 });
+
+test('back from a Crazy Box game (box): the box screen, the cursor on the game\'s box, the CABBIE kept; A plays it again', { skip: !have }, () => {
+  const menu = new DreamcastMenu(new Uint8Array(readFileSync(EXE)), { title: true, box: 2, cab: 3 });
+  for (let i = 0; i < 90; i++) menu.update(0);
+  assert.equal(menu.screen, 'menu');
+  assert.deepEqual(menu.state().items.slice(0, 2), [2, 4], 'CRAZY BOX, box 1-3 (item 4)');
+  const text = lines(menu).join(' ');
+  assert.ok(text.includes('GUS') && text.includes('CRAZYBALLOONS'), text);
+  press(menu, PAD.A, 200);
+  assert.deepEqual(menu.result, { mode: 2, item: 4, game: 2, cab: 3 });
+});

@@ -36,8 +36,8 @@ async function fetchOk(path) {
   return r;
 }
 
-/** Run the menu until a city is chosen; resolves with the menu's result. */
-async function runMenu() {
+/** Run the menu until a city is chosen; resolves with the menu's result. box: open on the Crazy Box's box screen with that game's box chosen and cab as the CABBIE. */
+async function runMenu(box, cab) {
   status.textContent = 'Loading the menu...';
   // The menus' sound (src/audio.js): the menu loop, the driver select's song, the cursor
   // and decide sounds and the voice, as the menu code requests them.
@@ -54,7 +54,7 @@ async function runMenu() {
   if (audio.ctx) for (const wav of ['SONG01/0000.wav', 'VOICE01/0672.wav']) audio.buffer(wav).catch(() => {});
   const startAudio = () => audio.start();
   for (const ev of ['keydown', 'pointerdown']) addEventListener(ev, startAudio);
-  const menu = new DreamcastMenu(exe, { title: true, motions, audio: audio.ctx ? audio : null, save: loadSave(localStorage) });
+  const menu = new DreamcastMenu(exe, { title: true, box, cab, motions, audio: audio.ctx ? audio : null, save: loadSave(localStorage) });
   const canvas = document.createElement('canvas');
   canvas.id = 'menu';
   canvas.style.position = 'fixed';
@@ -114,8 +114,11 @@ async function runMenu() {
 }
 
 async function boot() {
-  if (!new URLSearchParams(location.search).has('city')) {
-    const choice = await runMenu();
+  const params = new URLSearchParams(location.search);
+  if (!params.has('city')) {
+    // ?menu=crazybox&game=N&cab=C: a Crazy Box game ended (NO in its TRY AGAIN window, or a clear) - back to the box screen.
+    const box = params.get('menu') === 'crazybox' ? Math.min(15, Math.max(0, parseInt(params.get('game'), 10) || 0)) : undefined;
+    const choice = await runMenu(box, parseInt(params.get('cab'), 10) || 0);
     const extra = choice.city === 'crazybox' ? `game=${choice.game}` : `rules=${choice.item}`;
     history.replaceState(null, '', `?city=${choice.city}&cab=${choice.cab}&${extra}`);
     status.style.display = '';

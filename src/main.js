@@ -18,7 +18,7 @@ import { CabShadow } from './cab-shadow.js';
 import { NavArrow } from './nav-arrow.js';
 import { GameAudio } from './audio.js';
 import { MenuView } from './menu-view.js';
-import { loadSave, storeSave } from './dc-menu.js';
+import { loadSave, storeSave, PAD } from './dc-menu.js';
 import { BoxObjects } from './box-objects.js';
 
 const ASSETS = 'local-assets/';
@@ -190,19 +190,24 @@ async function main() {
   }
 
   let acc = 0, last = performance.now(), frames = 0, fpsT = last, fps = 0;
-  // The Crazy Box's end (callTryAgain: 180 frames after a fault, or after the clear): the
-  // game's TRY AGAIN window - A (Z / Enter) plays the box again, B (X / Escape) goes back
-  // to the title and the menu.
-  const tryAgainLabel = document.createElement('div');
-  tryAgainLabel.style.cssText = 'position:fixed;inset:0;display:grid;place-content:center;text-align:center;font:bold 48px sans-serif;color:#ffe81e;text-shadow:0 2px 6px #000;pointer-events:none';
-  tryAgainLabel.hidden = true;
-  document.body.append(tryAgainLabel);
+  // The Crazy Box's end. callTryAgain (180 frames after a fault) opens the game's TRY AGAIN
+  // window: the game stands still, its last frame dimmed (Pause_ExecRenderTexture1st draws
+  // it at 0.4), and car.windowFrame runs the window with the pad - up / down, A (Z / Enter)
+  // decides, B (X / Escape) is NO. YES plays the box again; NO goes back to the Crazy Box's
+  // box screen (?menu=crazybox), as the game does after a clear (End_Excellent).
+  let ending = false, leaving = false, frozen = [], pad = 0;
+  const dim = document.createElement('div');
+  dim.style.cssText = 'position:fixed;inset:0;background:#000;opacity:0.6;pointer-events:none';
+  dim.hidden = true;
   if (CRAZY) {
-    addEventListener('keydown', (e) => {
-      if (tryAgainLabel.hidden) return;
-      if (e.code === 'KeyZ' || e.code === 'Enter') { tryAgainLabel.hidden = true; restart(); }
-      else if (e.code === 'KeyX' || e.code === 'Escape') location.search = '';
-    });
+    boxCanvas.before(dim);
+    const keys = {
+      ArrowUp: PAD.UP, KeyW: PAD.UP, ArrowDown: PAD.DOWN, KeyS: PAD.DOWN,
+      KeyZ: PAD.A, Enter: PAD.A, Space: PAD.A, KeyX: PAD.B, Escape: PAD.B, Backspace: PAD.B,
+    };
+    addEventListener('keydown', (e) => { if (keys[e.code]) pad |= keys[e.code]; });
+    addEventListener('keyup', (e) => { if (keys[e.code]) pad &= ~keys[e.code]; });
+    addEventListener('blur', () => { pad = 0; });
   }
   const euler = new THREE.Euler(0, 0, 0, 'YXZ');
   const events = [];
@@ -238,19 +243,27 @@ async function main() {
     let steps = 0;
     events.length = 0;
     while (acc >= STEP && steps < 6) {
-      car.update(state);
+      if (ending) car.windowFrame(pad);
+      else car.update(state);
       events.push(...car.events);
       state.drivePressed = state.reversePressed = false;
       acc -= STEP;
       steps++;
     }
-    if (CRAZY && tryAgainLabel.hidden) {
-      const box = car.crazyBox();
-      if (box.over) {
-        storeSave(localStorage, car.save());   // the records the game filed (a clear unlocks the next boxes)
-        tryAgainLabel.innerHTML = `${box.excellent ? 'EXCELLENT!' : 'FAULT'}<br>TRY AGAIN?<br><small>A (Z / Enter) yes &nbsp; B (X / Esc) no</small>`;
-        tryAgainLabel.hidden = false;
-      }
+    if (CRAZY && !ending && car.crazyBox().over) {
+      storeSave(localStorage, car.save());   // the records the game filed (a clear unlocks the next boxes)
+      ending = true;
+      dim.hidden = false;
+      frozen = car.sprites.map((s) => ({ ...s, colour: s.colour.map((c) => c * 0.4) }));   // the last frame's overlay, dimmed
+      car.events = [];
+    }
+    if (ending && car.choice === 'retry') {
+      ending = false;
+      dim.hidden = true;
+      restart();
+    } else if (ending && car.choice === 'menu' && !leaving) {
+      leaving = true;
+      location.search = `?menu=crazybox&game=${MINI_GAME}&cab=${CAB}`;
     }
 
     // The cab as the game draws it (car.drawn: the pose putPlayerCar saw, a frame
@@ -280,7 +293,7 @@ async function main() {
       // The game's 640 x 480 screen is the 4:3 middle of the window (the vertical view is the game's).
       const h = Math.round(innerHeight * Math.min(devicePixelRatio, 2)), w = Math.round(h * 4 / 3);
       if (boxCanvas.width !== w || boxCanvas.height !== h) { boxCanvas.width = w; boxCanvas.height = h; }
-      boxView.render(car.sprites, { clear: true });
+      boxView.render(ending ? frozen.concat(car.sprites) : car.sprites, { clear: true });
     }
 
     frames++;

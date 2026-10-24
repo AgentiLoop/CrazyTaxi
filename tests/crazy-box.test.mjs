@@ -160,6 +160,7 @@ test('a clear is filed in the records (CheckRanking); the save opens 1-4 in the 
     }
     const box = car.crazyBox();
     assert.ok(box.over && box.excellent && !box.fault, `game ${g}: ${JSON.stringify(box)}`);
+    assert.equal(car.choice, 'menu', 'after a clear the game goes back to the box screen (gameState2)');
     assert.ok(n > 300 + 200 && n < 300 + 230, `End_Excellent ends it after the record window's 210 frames (${n})`);
     save = car.save();
     assert.equal(save.length, SAVE_SIZE);
@@ -178,3 +179,52 @@ test('a clear is filed in the records (CheckRanking); the save opens 1-4 in the 
   assert.notEqual(box4(null)?.game, 3, 'without it 1-4 stays locked');
 });
 
+
+test('the TRY AGAIN window is the game\'s: its text, the cursor, YES plays again, NO and B go back to the menu', { skip: !have }, () => {
+  const ended = () => {
+    const car = make(0);
+    for (let n = 0; n < 1500 && !car.crazyBox().over; n++) car.update(n > 190 ? { ...IDLE, accel: 1 } : IDLE);
+    assert.ok(car.crazyBox().over && car.crazyBox().fault);
+    return car;
+  };
+  const text = (car) => {
+    const rows = new Map();
+    for (const s of car.sprites) if (s.kind === 'glyph') rows.set(s.y, (rows.get(s.y) || '') + s.char);
+    return [...rows.entries()].sort((a, b) => a[0] - b[0]).map((r) => r[1]);
+  };
+  const lit = (car, ch) => car.sprites.find((s) => s.kind === 'glyph' && s.char === ch).colour[2] < 0.5;   // the cursor's item: orange
+  const wait = (car) => { let k = 0; for (; k < 200 && !car.choice; k++) car.windowFrame(0); return k; };
+
+  // YES (the cursor starts on it): A, then the window's 90-frame step -> windowRetry.
+  let car = ended();
+  car.windowFrame(0);
+  assert.deepEqual(text(car), ['tryagain?', 'yes', 'no'], 'pfPutc\'s text (the font draws it in capitals)');
+  assert.ok(car.sprites.every((s) => s.x >= 0 && s.x < 640 && s.y >= 0 && s.y < 480));
+  assert.ok(lit(car, 'y') && !lit(car, 'o'), 'the cursor on YES');
+  car.windowFrame(PAD.A);
+  assert.equal(car.choice, null, 'not at once');
+  const k = wait(car);
+  assert.equal(car.choice, 'retry');
+  assert.ok(k > 80 && k < 100, `windowEnterStep(90) (${k})`);
+  car.init();
+  assert.equal(car.choice, null);
+  assert.equal(car.crazyBox().over, false);
+
+  // NO: down, A -> windowGoMenu.
+  car = ended();
+  car.windowFrame(0);   // the window opens (windowOpenStep)
+  car.windowFrame(PAD.DOWN);
+  assert.ok(lit(car, 'o') && !lit(car, 'y'), 'the cursor on NO');
+  assert.ok(car.sounds.length > 0, 'the cursor\'s sound');
+  car.windowFrame(0);
+  car.windowFrame(PAD.A);
+  wait(car);
+  assert.equal(car.choice, 'menu');
+
+  // B on YES -> NO's way.
+  car = ended();
+  car.windowFrame(0);
+  car.windowFrame(PAD.B);
+  wait(car);
+  assert.equal(car.choice, 'menu');
+});
