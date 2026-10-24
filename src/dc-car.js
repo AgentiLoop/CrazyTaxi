@@ -132,6 +132,10 @@ const G = {
   eventList: 0x0C177748,              // nlInitEvent's list: head, tail; an event: +4 prev, +8 next, +0xC function
   stopTable: 0x0C177270,              // kyakuInitStops' stop entries (24 bytes: stop, centre, +0x14 drop radius; entry 1 + stop)
   landmarkPicture: 0x0C0E37DC,        // the destination's landmark picture (PutLandmark draws it)
+  kyakuArea: 0x0C0EC710,              // ExecKyakuArea: the stop area's phase (+0.05 a frame, wrapping 0..1); +4 its angle (+2048 a frame)
+  kyakuAreaGlow: 0x0C26FA20,          // ExecKyakuArea: 0.5 + 0.25 sin(angle), the stop area's green
+  stopAreas: 0x0C0EC7B8,              // PutKyakuStopArea's polygons: by Game_No, by MiniGame_No, 8 bytes per stop (count, points)
+  markerFade: 0x0C0D4F04,             // psgPutMarker's five fade colours (RGB floats), by k * 4
   // gdc_CourseStartLoadReq in the Crazy Box: the first course by MiniGame_No, a pointer to the
   // counts; the CourseMode 2 table of AFS entries by course (130; the decomp's EU 0x0C08D21C).
   boxCourseFirst: 0x0C0C71BC, boxCourseCount: 0x0C1231F0, boxCourseEntries: 0x0C08C7D4,
@@ -208,6 +212,12 @@ const FN = {
   // face the cab (Put_PoleMarriageKiss plays the kiss once character 33 is delivered). FcvStoreBuffer
   // (motion, buffer, frame) makes the pose buffer FcvPlayBuffer takes.
   fcvPlay: 0x0C065008, fcvStoreBuffer: 0x0C065BB0,
+  // The customers' marks, as the game draws them (`marksDrawn`; the Crazy Box only - its games
+  // pick whom they mark: game 8 only the boyfriends, game 15 no stop areas at all):
+  // psgPutMarker's ring (nlObjPutUseViewMatrix from 0x0C070D9C; r14 the passenger, +0x144 its
+  // task; the model the near or the far ring), kyakuTaskExec's pick-up circle (the line loop
+  // drawer 0x0C07A910 from 0x0C024F8C, r4 the task + 0x1A0) and PutKyakuStopArea's rings (from 0x0C034E06).
+  markerPut: 0x0C070D9C, lineLoop: 0x0C07A910, takeAreaPut: 0x0C024F8C, stopAreaPut: 0x0C034E06,
   entryCarPut: 0x0C043BA2, trafficControl: 0x0C041ACC, executeEvent: 0x0C0296B6, execColliObj: 0x0C031EE4,
   putCarModel: 0x0C0434D0, putTrainModel: 0x0C0437FE,
   putPlayerCar: 0x0C0203E8, putPlayerCarByView: 0x0C0200E4,
@@ -239,7 +249,7 @@ const STUBS = [
   0x0C03858C, // PutMVObj (the cab's shadow volume; putPlayerCar itself runs: its GetRotVec
               // stores the cab's rotation vectors at +0x30, which the collision objects need)
   0x0C04AE88, // replay
-  0x0C0206DC, // carRumble
+  // carRumble (0x0C0206DC) runs: besides the rumble it is the Crazy Dash's state machine (+0x3B0).
   0x0C05E1D0, // ndPuru2Start
   0x0C035C40, // SetEffect
   0x0C035F68, // ExecEffect
@@ -332,7 +342,14 @@ export class DreamcastCar {
       cpu.hooks.set(FN.objPut, (c) => {
         const pr = c.pr >>> 0;
         if (pr >= FN.setObjFly && pr < FN.setObjFlyEnd) this.objects.push({ model: c.r[4] >>> 0, matrix: xmtrx(c), setObject: true });
+        if (pr === FN.markerPut) this.marksDrawn.markers.set(cpu.r32((c.r[14] >>> 0) + 0x144), c.r[4] >>> 0);
         return 0;
+      });
+      cpu.hooks.set(FN.lineLoop, (c) => {
+        const pr = c.pr >>> 0;
+        if (pr === FN.takeAreaPut) this.marksDrawn.takeAreas.add(((c.r[4] >>> 0) - 0x1A0) >>> 0);
+        if (pr === FN.stopAreaPut) this.marksDrawn.stopArea = true;
+        return false;
       });
       cpu.hooks.set(FN.arrowPut, (c) => {
         if ((c.pr >>> 0) === FN.navArrowPut) this.navDrawn = true;
@@ -347,6 +364,8 @@ export class DreamcastCar {
       // FcvPlay's figure: kept, and posed after the frame (a hook cannot call the game; see update()).
       cpu.hooks.set(FN.fcvPlay, (c) => { this.fcvPlays.push({ motion: c.r[4] >>> 0, chara: c.r[5], frame: c.f(4), matrix: xmtrx(c) }); return 0; });
     }
+    /** The Crazy Box: the customers' marks the game drew this frame (see FN.markerPut); null elsewhere. */
+    this.marksDrawn = opts.city === CRAZY_BOX ? { markers: new Map(), takeAreas: new Set(), stopArea: false } : null;
     /** @type {object[]} the Crazy Box: FcvPlay's figures this frame (motion, character, frame, matrix) */
     this.fcvPlays = [];
     /** @type {object[]} the Crazy Box: the models its games drew this frame (see FN.objPutTrnsl) */
@@ -636,6 +655,44 @@ export class DreamcastCar {
     return out;
   }
 
+  /**
+   * A customer task's marks: whether a destination is chosen (+0x198's stop word not -1),
+   * psgPutMarker's bounce height (+0x17C) and spin (+0x180), and MakeKyakuTakeArea's line
+   * loop (+0x1A0: { colour (ARGB), points (count + 1, [x, y, z]) }, null before it is made).
+   */
+  marks(task) {
+    const cpu = this.cpu, entry = cpu.r32(task + 0x198), a = task + 0x1A0, n = cpu.r32(a);
+    let takeArea = null;
+    if (n > 0 && n <= 64) {
+      const points = [];
+      for (let i = 0; i <= n; i++) points.push([cpu.rf(a + 8 + 12 * i), cpu.rf(a + 12 + 12 * i), cpu.rf(a + 16 + 12 * i)]);
+      takeArea = { colour: cpu.r32(a + 4), points };
+    }
+    return { hasStop: entry !== 0 && cpu.rs32(entry) !== -1, markerY: cpu.rf(task + 0x17C), markerSpin: cpu.r16(task + 0x180), takeArea };
+  }
+
+  /** The polygon PutKyakuStopArea draws round a stop: [x, y, z] points. */
+  stopArea(stop) {
+    const cpu = this.cpu;
+    const sets = cpu.r32(cpu.r32(G.stopAreas + 4 * cpu.r32(G.gameNo)) + 4 * cpu.r32(G.miniGameNo));
+    const n = cpu.r32(sets + 8 * stop), p = cpu.r32(sets + 8 * stop + 4);
+    const out = [];
+    for (let i = 0; i < n && i < 256; i++) out.push([cpu.rf(p + 12 * i), cpu.rf(p + 12 * i + 4), cpu.rf(p + 12 * i + 8)]);
+    return out.length ? out : null;
+  }
+
+  /** ExecKyakuArea's state this frame (phase 0..1, glow), the camera mode, psgPutMarker's half-size flag (Car_Data +0x58). */
+  kyakuArea() {
+    const cpu = this.cpu;
+    return { phase: cpu.rf(G.kyakuArea), glow: cpu.rf(G.kyakuAreaGlow), camMode: cpu.r32(G.camMode), markerHalf: cpu.r32(CAR + 0x58) !== 0 };
+  }
+
+  /** psgPutMarker's fade colour for a customer's k: [r, g, b]. */
+  markerColour(k) {
+    const i = Math.max(0, Math.min(4, Math.trunc(k * 4)));
+    return [0, 1, 2].map((c) => this.cpu.rf(G.markerFade + 12 * i + 4 * c));
+  }
+
   /** The customer who boarded (request state 5: getting in, riding or getting out), if any. */
   rider() {
     return this.customers().find((t) => t.request === 5) || null;
@@ -652,6 +709,7 @@ export class DreamcastCar {
     this.sprites = [];
     this.objects = [];
     this.navDrawn = false;
+    if (this.marksDrawn) this.marksDrawn = { markers: new Map(), takeAreas: new Set(), stopArea: false };
     this.sounds = [];
     this.voices = [];
     this.musicCue = false;
@@ -669,8 +727,16 @@ export class DreamcastCar {
     cpu.wf(G.stick, this.stickX);
     cpu.wf(G.accel, input.accel);
     cpu.wf(G.brake, input.brake);
-    cpu.w8(G.buttonB, input.drive ? 1 : 0);
-    cpu.w8(G.buttonA, input.reverse ? 1 : 0);
+    // ConvertSwitch's button bytes: +0x1B/+0x1C held (B Drive, A Reverse), +0x1F/+0x20 pressed this
+    // frame, +0x23/+0x24 released, +0x27/+0x28 last frame's. carRumble (USA ~0x0C020700) starts the
+    // Crazy Dash on +0x1F (the throttle up by 0.8 within 4 frames: +0x3B0 = 2 for 90 frames). A tap
+    // shorter than a frame still counts as held for one.
+    const sw = G.taxiSW, lastB = cpu.r8(sw + 0x1B), lastA = cpu.r8(sw + 0x1C);
+    const b = input.drive || input.drivePressed ? 1 : 0, a = input.reverse || input.reversePressed ? 1 : 0;
+    cpu.w8(sw + 0x27, lastB); cpu.w8(sw + 0x28, lastA);
+    cpu.w8(G.buttonB, b); cpu.w8(G.buttonA, a);
+    cpu.w8(sw + 0x1F, b & ~lastB & 1); cpu.w8(sw + 0x20, a & ~lastA & 1);
+    cpu.w8(sw + 0x23, lastB & ~b & 1); cpu.w8(sw + 0x24, lastA & ~a & 1);
     const h0 = cpu.r16(CAR + 0x86);
     this.call(FN.execCarMain);
     const dh = ((cpu.r16(CAR + 0x86) - h0 + 0x8000) & 0xFFFF) - 0x8000;

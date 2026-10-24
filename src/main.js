@@ -17,6 +17,7 @@ import { CartoonDigits } from './cartoon-digits.js';
 import { TrafficView } from './traffic-view.js';
 import { CabShadow } from './cab-shadow.js';
 import { NavArrow } from './nav-arrow.js';
+import { KyakuMarks } from './kyaku-marks.js';
 import { GameAudio } from './audio.js';
 import { MenuView } from './menu-view.js';
 import { loadSave, storeSave, PAD } from './dc-menu.js';
@@ -168,6 +169,7 @@ async function main() {
   const input = new Input();
   const traffic = new TrafficView(scene, ASSETS, vehicleManifest);
   const navArrow = new NavArrow(scene, ASSETS);   // the game's arrow model, in front of the camera, to the destination
+  const marks = new KyakuMarks(scene, ASSETS);    // the pick-up circles, the dollar markers, the destination's wall
   const boxObjects = CRAZY ? new BoxObjects(scene, ASSETS, COURSE_MODE) : null;   // the Crazy Box games' own models (the balloons)
   const style = document.createElement('style');
   style.textContent = HUD_CSS;
@@ -182,6 +184,7 @@ async function main() {
   function restart() {
     car.init();           // gameState0: the game's own start - the countdown begins
     people.clear();
+    marks.clear();
     traffic.clear();
   }
   restart();
@@ -201,6 +204,12 @@ async function main() {
   }
 
   let acc = 0, last = performance.now(), frames = 0, fpsT = last, fps = 0;
+  // P pauses: the game stops stepping, the sound is held and PAUSED is shown.
+  let paused = false;
+  const pauseLabel = document.createElement('div');
+  pauseLabel.textContent = 'PAUSED';
+  pauseLabel.style.cssText = 'position:fixed;inset:0;display:none;place-items:center;font:bold 64px sans-serif;color:#fff;text-shadow:0 2px 6px #000;pointer-events:none';
+  document.body.append(pauseLabel);
   // The Crazy Box's end. callTryAgain (180 frames after a fault) opens the game's TRY AGAIN
   // window: the game stands still, its last frame dimmed (Pause_ExecRenderTexture1st draws
   // it at 0.4), and car.windowFrame runs the window with the pad - up / down, A (Z / Enter)
@@ -250,6 +259,12 @@ async function main() {
     last = now;
     acc += dt;
     const state = input.poll();
+    if (state.pausePressed) {
+      paused = !paused;
+      pauseLabel.style.display = paused ? 'grid' : 'none';
+      if (audio.ctx && audio.started) { if (paused) audio.ctx.suspend(); else audio.ctx.resume(); }
+    }
+    if (paused) { acc = 0; return; }
     if (state.resetPressed) restart();
     let steps = 0;
     events.length = 0;
@@ -295,9 +310,10 @@ async function main() {
     const gs = car.gameSystem();
     const rider = car.rider();
     traffic.update(car.cars);
-    people.update(car.people, customers, stops);
+    people.update(car.people);
     if (boxObjects) boxObjects.update(car.objects);
     gameCamera.apply(car.camera());   // camUpdate's view: the traffic was culled with it
+    marks.update(car, customers, camera, renderer);
     // The Crazy Box: only while the game draws its own (some games carry fares without it).
     navArrow.update(camera, d.pos, gs.aboard && rider && rider.phase === 2 && (!CRAZY || car.navDrawn) ? stops[rider.stop].centre : null);
     renderer.render(scene, camera);
@@ -320,7 +336,7 @@ async function main() {
   // For tests and probes.
   window.__game = {
     car, scene, camera, gameCamera, renderer, cityName, wheelRadius: WHEEL_RADIUS, stops,
-    people, traffic, cabShadow, navArrow, restart, audio, boxObjects, batched,
+    people, traffic, cabShadow, navArrow, marks, restart, audio, boxObjects, batched,
   };
 }
 

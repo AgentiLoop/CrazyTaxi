@@ -16,10 +16,7 @@
 // shoulder or hip angles ([8], [10], [13], [15]), the two-bone solver (fcvSolveIK: aim
 // +x at the target, twist about x to keep the old z plane, bend both segments about z
 // by the law of cosines) and the hand or foot angles ([9], [11], [14], [16]).
-//
-// Also drawn here: the pick-up circle around a waiting customer (MakeKyakuTakeArea,
-// radius 100 - 60k; the colour bands by k are assumed) and the destination's drop
-// circle while a customer rides.
+// (The pick-up circle, the dollar marker and the destination: src/kyaku-marks.js.)
 import * as THREE from 'three';
 import { loadGltf, makeUnlit } from './scene.js';
 
@@ -29,8 +26,6 @@ const QUARTER = 0x4000;
 // Per limb (left hand, right hand, left foot, right foot): target slot, root angles,
 // end angles, solver lengths (0 arm, 1 leg), bones (root, middle, end).
 const LIMBS = [[1, 8, 9, 0, [4, 3, 2]], [2, 10, 11, 0, [7, 6, 5]], [3, 13, 14, 1, [11, 10, 9]], [4, 15, 16, 1, [14, 13, 12]]];
-const CIRCLE_COLOURS = [0x30e030, 0xf0d020, 0xf03030];   // by k thirds (assumed colour bands)
-const STOP_COLOUR = 0x40c0ff;
 
 // --- 3 x 3 matrices as row-major arrays of 9 ---
 const I3 = [1, 0, 0, 0, 1, 0, 0, 0, 1];
@@ -131,8 +126,6 @@ export class PeopleView {
     this.ready = null;
     this.clips = new Map();         // motion address -> { clip, frames }
     this.bind = null; this.lengths = null;
-    this.circles = new Map();       // task -> ring mesh
-    this.stopRing = null;
     this.drawn = 0;
   }
 
@@ -226,8 +219,8 @@ export class PeopleView {
     }
   }
 
-  /** @param people car.people this frame; @param customers car.customers(); @param stops the city's stops (manifest) */
-  update(people, customers, stops) {
+  /** @param people car.people this frame */
+  update(people) {
     for (const list of this.pool.values()) for (const inst of list) inst.used = false;
     if (this.bind) {
       const count = new Map();
@@ -246,53 +239,9 @@ export class PeopleView {
     }
     this.drawn = 0;
     for (const list of this.pool.values()) for (const inst of list) { inst.group.visible = inst.used; if (inst.used) this.drawn++; }
-    this.markers(customers, stops);
-  }
-
-  ring(colour) {
-    const mesh = new THREE.Mesh(
-      new THREE.RingGeometry(0.82, 1, 48),
-      new THREE.MeshBasicMaterial({ color: colour, transparent: true, opacity: 0.55, side: THREE.DoubleSide, depthWrite: false }),
-    );
-    mesh.rotation.x = -Math.PI / 2;
-    this.scene.add(mesh);
-    return mesh;
-  }
-
-  markers(customers, stops) {
-    const seen = new Set();
-    let rider = null;
-    for (const t of customers) {
-      if (t.request === 5) rider = t;
-      if (t.request >= 5 || t.phase !== 1) continue;   // waiting at the kerb only
-      seen.add(t.task);
-      let c = this.circles.get(t.task);
-      if (!c) {
-        c = this.ring(CIRCLE_COLOURS[Math.min(2, Math.floor(t.k * 3))]);
-        const rad = 100 - 60 * t.k;
-        c.scale.set(rad, rad, 1);
-        this.circles.set(t.task, c);
-      }
-      c.position.set(t.spot[0], t.spot[1] + 0.6, t.spot[2]);
-    }
-    for (const [task, c] of this.circles) {
-      if (seen.has(task)) continue;
-      this.scene.remove(c); c.geometry.dispose(); c.material.dispose();
-      this.circles.delete(task);
-    }
-    const stop = rider && rider.phase === 2 && stops ? stops[rider.stop] : null;
-    if (stop) {
-      if (!this.stopRing) this.stopRing = this.ring(STOP_COLOUR);
-      this.stopRing.visible = true;
-      this.stopRing.scale.set(stop.radius, stop.radius, 1);
-      this.stopRing.position.set(stop.centre[0], stop.centre[1] + 0.6, stop.centre[2]);
-    } else if (this.stopRing) {
-      this.stopRing.visible = false;
-    }
   }
 
   clear() {
     for (const list of this.pool.values()) for (const inst of list) inst.group.visible = false;
-    this.markers([], null);
   }
 }

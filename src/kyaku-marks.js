@@ -171,18 +171,22 @@ export class KyakuMarks {
     const cab = car.pos;
     const flat = (p) => Math.hypot(p[0] - cab.x, p[2] - cab.z);
     const seenMarks = new Set(), seenPickups = new Set();
+    // The Crazy Box: the marks the game itself drew this frame (car.marksDrawn) - its games
+    // choose whom they mark (game 8 only the boyfriends; game 15 shows no stop area).
+    const drawn = car.marksDrawn;
     let rider = null;
     for (const c of customers) {
       if (c.request === 5) rider = { ...c, ...car.marks(c.task) };
-      if (c.request >= 5 || c.phase !== 1) continue;
+      if (!drawn && (c.request >= 5 || c.phase !== 1)) continue;
       const t = { ...c, ...car.marks(c.task) };
-      if (!t.hasStop) continue;   // waiting at the kerb, a destination chosen
-      if ([0, 1, 2, 10, 11].includes(mode)) {
+      // waiting at the kerb, a destination chosen
+      const waiting = c.request < 5 && c.phase === 1 && t.hasStop && [0, 1, 2, 10, 11].includes(mode);
+      if (drawn ? drawn.markers.has(t.task) : waiting) {
         // psgPutMarker
         const m = this.marker(t.task);
         seenMarks.add(t.task);
         const at = new THREE.Vector3(t.pos[0], t.pos[1] + t.markerY, t.pos[2]);
-        const near = camera.position.distanceTo(at) <= NEAR_RING;
+        const near = drawn ? drawn.markers.get(t.task) === RING_NEAR : camera.position.distanceTo(at) <= NEAR_RING;
         m.near.visible = near; m.far.visible = !near;
         const s = fx.markerHalf ? 0.5 : 1;
         m.spin.position.copy(at);
@@ -194,21 +198,21 @@ export class KyakuMarks {
         const rgb = car.markerColour(t.k);
         KyakuMarks.tint(m.spin, rgb);
         KyakuMarks.tint(m.dollar, rgb);
-        // The pick-up circle
-        if (t.takeArea && flat(t.spot) < PICKUP_RANGE) {
-          seenPickups.add(t.task);
-          let l = this.pickups.get(t.task);
-          if (!l) {
-            const c = t.takeArea.colour;
-            const mat = this.lineMaterial();
-            mat.color.setRGB((c >>> 16 & 255) / 255, (c >>> 8 & 255) / 255, (c & 255) / 255, SRGB);
-            mat.opacity = (c >>> 24) / 255;
-            l = this.line(t.takeArea.points, mat);
-            this.pickups.set(t.task, l);
-          }
-          l.material.linewidth = px;
-          l.material.resolution.copy(this.resolution);
+      }
+      // The pick-up circle
+      if (t.takeArea && (drawn ? drawn.takeAreas.has(t.task) : waiting && flat(t.spot) < PICKUP_RANGE)) {
+        seenPickups.add(t.task);
+        let l = this.pickups.get(t.task);
+        if (!l) {
+          const c = t.takeArea.colour;
+          const mat = this.lineMaterial();
+          mat.color.setRGB((c >>> 16 & 255) / 255, (c >>> 8 & 255) / 255, (c & 255) / 255, SRGB);
+          mat.opacity = (c >>> 24) / 255;
+          l = this.line(t.takeArea.points, mat);
+          this.pickups.set(t.task, l);
         }
+        l.material.linewidth = px;
+        l.material.resolution.copy(this.resolution);
       }
     }
     for (const [task, m] of this.markers) {
@@ -229,7 +233,7 @@ export class KyakuMarks {
     const stop = rider && rider.phase === 2 && rider.hasStop ? rider.stop : -1;
     const area = stop >= 0 && [0, 1, 2].includes(mode) ? car.stopArea(stop) : null;
     const centre = area && area.reduce((a, p) => [a[0] + p[0] / area.length, a[1], a[2] + p[2] / area.length], [0, 0, 0]);
-    if (area && flat(centre) < STOP_RANGE) {
+    if (area && (drawn ? drawn.stopArea : flat(centre) < STOP_RANGE)) {
       if (!this.stop || this.stop.key !== stop) {
         this.clearStop();
         const loop = [...area, area[0]];

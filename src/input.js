@@ -8,6 +8,7 @@ const MAP = {
   KeyX: 'drive',    // B button
   KeyZ: 'reverse',  // A button
   KeyR: 'reset',
+  KeyP: 'pause',
 };
 
 export class Input {
@@ -37,7 +38,7 @@ export class Input {
       brake: d.has('brake') ? 1 : 0,
       drive: d.has('drive'), reverse: d.has('reverse'),
       drivePressed: p.has('drive'), reversePressed: p.has('reverse'),
-      resetPressed: p.has('reset'),
+      resetPressed: p.has('reset'), pausePressed: p.has('pause'),
     };
     p.clear();
     return state;

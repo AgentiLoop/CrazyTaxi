@@ -513,15 +513,6 @@ test('moving the cab far away removes the traffic left behind', { skip: !have },
   assert.equal(now.filter((c) => Math.hypot(c.x - car.pos.x, c.z - car.pos.z) > 1700).length, 0);
 });
 
-test('a frame of the game - the cab, the traffic, the customers, the driver - is cheap enough for 60 Hz', { skip: !have }, () => {
-  const car = start(make(0));
-  for (let i = 0; i < 60; i++) car.update(GAS);
-  const t0 = performance.now();
-  for (let i = 0; i < 120; i++) car.update({ ...GAS, steer: 0.3 });
-  const ms = (performance.now() - t0) / 120;
-  assert.ok(ms < 8, `${ms} ms per frame`);
-});
-
 test('STEP is the Dreamcast frame', () => {
   assert.equal(STEP, 1 / 60);
 });

@@ -45,6 +45,26 @@ test('Crazy Jump: down the ramp, the jump ends in a fault with the distance', { 
   for (let i = 0; i < 200; i++) car.update(IDLE);
 });
 
+test('Crazy Jump: a Crazy Dash at GO (off the gas, Drive, gas) clears 150 m; without it the jump falls short', { skip: !have }, () => {
+  const car = make(0);
+  const run = (dash) => {
+    car.init();
+    let n = 0, dashed = 0;
+    while (!car.crazyBox().fault && n < 1500) {
+      const input = n < 190 ? IDLE : dash && n === 191 ? { ...IDLE, drive: true } : dash && n === 190 ? IDLE : { ...IDLE, accel: 1 };
+      car.update(input);
+      if (car.cpu.r32(0x0C176E4C + 0x3B0) === 2) dashed++;
+      n++;
+    }
+    return { score: car.crazyBox().score, dashed };
+  };
+  const plain = run(false), dash = run(true);
+  assert.equal(plain.dashed, 0);
+  assert.ok(plain.score < 15000, `no dash: ${plain.score}`);
+  assert.equal(dash.dashed, 90, 'carRumble: the dash state (+0x3B0 = 2) for 90 frames');
+  assert.ok(dash.score > 15000, `dash: ${dash.score}`);
+});
+
 test('every game starts and runs its countdown', { skip: !have }, () => {
   for (const g of [2, 7, 15]) {
     const car = make(g);
@@ -248,6 +268,44 @@ test('game 10\'s figure by the pole (FcvPlay): character 36, posed by FcvStoreBu
     const other = make(g);
     for (let n = 0; n < 200; n++) other.update(IDLE);
     assert.ok(other.people.every((p) => p.chara !== 36 || p.kind !== 'fcv'), `game ${g}: no FcvPlay figure`);
+  }
+});
+
+test('the customers\' marks are the game\'s draws: game 8 marks only the boyfriends, game 15 shows no stop area', { skip: !have }, () => {
+  const BOYFRIENDS = [26, 32, 33, 38, 52];   // IsBoyFriend (USA 0x0C025F90): its five characters
+  const RINGS = [0x0C0E9A10, 0x0C0EA510];    // psgPutMarker's near and far ring
+  const run = (g, frames, each) => {
+    const car = make(g);
+    for (let n = 0; n < frames && !car.crazyBox().over; n++) {
+      car.update(n > 190 ? { ...IDLE, accel: 1, steer: Math.sin(n / 60) * 0.3 } : IDLE);
+      each(car, new Map(car.customers().map((c) => [c.task, c])));
+    }
+  };
+  const marked = new Set(), waiting = new Set();
+  let markers = 0, circles = 0;
+  run(8, 1500, (car, live) => {
+    const d = car.marksDrawn;
+    for (const c of live.values()) if (c.request < 5 && c.phase === 1) waiting.add(c.chara);
+    for (const [task, model] of d.markers) {
+      assert.ok(RINGS.includes(model), `a ring model (${model.toString(16)})`);
+      const c = live.get(task);
+      if (c) { marked.add(c.chara); assert.ok(c.request < 5 && c.phase === 1, 'a waiting customer'); }
+      markers++;
+    }
+    circles += d.takeAreas.size;
+  });
+  assert.ok(markers > 1000 && circles > 100, `game 8 marks (${markers} markers, ${circles} circles)`);
+  assert.ok([...marked].every((c) => BOYFRIENDS.includes(c)), `only boyfriends marked (${[...marked]})`);
+  assert.ok([...waiting].some((c) => !BOYFRIENDS.includes(c)), `others wait unmarked (${[...waiting]})`);
+  for (const [g, shown] of [[9, true], [15, false]]) {
+    let riding = 0, drawn = 0;
+    run(g, 2500, (car) => {
+      const r = car.rider();
+      if (r && r.phase === 2) { riding++; if (car.marksDrawn.stopArea) drawn++; }
+    });
+    assert.ok(riding > 500, `game ${g}: a fare aboard (${riding} frames)`);
+    if (shown) assert.ok(drawn > riding * 0.9, `game ${g}: the stop area ${drawn} of ${riding}`);
+    else assert.equal(drawn, 0, `game ${g}: no stop area`);
   }
 });
 
