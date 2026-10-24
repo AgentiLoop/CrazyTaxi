@@ -1,0 +1,9 @@
+# The game: dist/ (deploy/publish.sh builds it against the two asset hosts).
+name = "ct"
+compatibility_date = "2026-09-01"
+workers_dev = true
+routes = [
+  { pattern = "ct.gokart.games", custom_domain = true },
+]
+[assets]
+directory = "../dist"

@@ -1,0 +1,9 @@
+# The asset release's lowres/ (what the game loads by default), served with CORS for ct.gokart.games.
+name = "ctlow"
+compatibility_date = "2026-09-01"
+workers_dev = true
+routes = [
+  { pattern = "ctlow.gokart.games", custom_domain = true },
+]
+[assets]
+directory = "../asset-release/lowres"

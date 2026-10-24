@@ -1,0 +1,9 @@
+# The asset release's hires/ (the texture pack, ?hires=1 or H), served with CORS for ct.gokart.games.
+name = "cthigh"
+compatibility_date = "2026-09-01"
+workers_dev = true
+routes = [
+  { pattern = "cthigh.gokart.games", custom_domain = true },
+]
+[assets]
+directory = "../asset-release/hires"

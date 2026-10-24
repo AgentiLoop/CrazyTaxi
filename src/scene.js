@@ -117,7 +117,8 @@ export function releaseGltf(gltf) {
 // tools/ktx2_texture_pack.py: already flipped, scaled to at most 1024 and cut by the game's
 // alpha), swapped in as GPU-compressed textures whatever ?hires=N says.
 const RELEASE = (import.meta.env && import.meta.env.VITE_ASSETS) || '';
-export const PACK = RELEASE ? RELEASE.replace(/[^/]+\/?$/, 'hires/') : 'local-assets/texture_pack/';
+// VITE_PACK puts the pack on a host of its own (the published site: cthigh.gokart.games).
+export const PACK = (import.meta.env && import.meta.env.VITE_PACK) || (RELEASE ? RELEASE.replace(/[^/]+\/?$/, 'hires/') : 'local-assets/texture_pack/');
 /** A picture's URL by its PNG name: an asset release has it as a lossless WebP (tools/build_asset_release.mjs). */
 export const releaseImage = (url) => (RELEASE ? url.replace(/\.png$/, '.webp') : url);
 

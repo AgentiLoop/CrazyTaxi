@@ -132,6 +132,7 @@ export class MenuView {
     this.hires = new Map();      // texture number -> the pack's ImageBitmap (?hires=1)
     this.tinted = new Map();     // 'texture:r,g,b' -> canvas
     this.logo = new Image();
+    this.logo.crossOrigin = 'anonymous';   // the published site's assets are on another host
     this.logo.src = assets + 'crazy-taxi.svg';
     this.bars = new Map();       // 'w,h,fill,k' -> SVG HTMLImageElement
     this.inks = new Map();       // 'texture:sx,sy,sw,sh:test' -> ink box in the source rectangle (0..1) or null
@@ -344,6 +345,7 @@ export class MenuView {
       const path = this.paths.get(n);
       if (!path) return null;
       im = new Image();
+      im.crossOrigin = 'anonymous';   // read back (getImageData): needs CORS from the asset host
       im.src = releaseImage(this.assets + 'sprites/' + path);
       this.images.set(n, im);
     }
