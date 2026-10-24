@@ -199,6 +199,10 @@ const FN = {
   // goal; green by nlObjPutSetFadeColor): nlObjPut(model) from its call at 0x0C035488, XMTRX
   // the arrow in view space (camUpdate's view matrix, this frame's, already applied).
   arrowPut: 0x0C078F90, execArrowPut: 0x0C035488,
+  // The customer's navigation arrow: the same nlObjPut from kyakuTaskPut's call (0x0C0266F8).
+  // Some Crazy Box games carry fares without it (4, 10, 11, 12, 15; 9 and 13 show ExecArrow's
+  // green arrow instead at times): `navDrawn`, whether the game drew it this frame.
+  navArrowPut: 0x0C0266F8,
   entryCarPut: 0x0C043BA2, trafficControl: 0x0C041ACC, executeEvent: 0x0C0296B6, execColliObj: 0x0C031EE4,
   putCarModel: 0x0C0434D0, putTrainModel: 0x0C0437FE,
   putPlayerCar: 0x0C0203E8, putPlayerCarByView: 0x0C0200E4,
@@ -313,6 +317,7 @@ export class DreamcastCar {
         return 0;
       });
       cpu.hooks.set(FN.arrowPut, (c) => {
+        if ((c.pr >>> 0) === FN.navArrowPut) this.navDrawn = true;
         if ((c.pr >>> 0) === FN.execArrowPut) {
           const view = new Float32Array(16);
           for (let i = 0; i < 16; i++) view[i] = c.rf(G.viewMatrix + 4 * i);
@@ -629,6 +634,7 @@ export class DreamcastCar {
     this.events = [];
     this.sprites = [];
     this.objects = [];
+    this.navDrawn = false;
     this.sounds = [];
     this.voices = [];
     this.musicCue = false;

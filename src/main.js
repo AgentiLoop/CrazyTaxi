@@ -287,7 +287,8 @@ async function main() {
     people.update(car.people, customers, stops);
     if (boxObjects) boxObjects.update(car.objects);
     gameCamera.apply(car.camera());   // camUpdate's view: the traffic was culled with it
-    navArrow.update(camera, d.pos, gs.aboard && rider && rider.phase === 2 ? stops[rider.stop].centre : null);
+    // The Crazy Box: only while the game draws its own (some games carry fares without it).
+    navArrow.update(camera, d.pos, gs.aboard && rider && rider.phase === 2 && (!CRAZY || car.navDrawn) ? stops[rider.stop].centre : null);
     renderer.render(scene, camera);
     if (boxView) {
       // The game's 640 x 480 screen is the 4:3 middle of the window (the vertical view is the game's).

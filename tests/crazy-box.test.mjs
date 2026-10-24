@@ -212,6 +212,21 @@ test('Crazy Bowling\'s guide arrow (ExecArrow): the arrow model, green, standing
   assert.ok(spots[1].frame > 300, 'stays while the cab drives up');
 });
 
+test('the navigation arrow is the game\'s call: game 5 draws it with a fare aboard, game 10 never does', { skip: !have }, () => {
+  for (const [g, shown] of [[5, true], [10, false]]) {
+    const car = make(g);
+    let riding = 0, drawn = 0;
+    for (let n = 0; n < 700; n++) {
+      car.update(n > 190 ? { ...IDLE, accel: 1, steer: Math.sin(n / 90) * 0.3 } : IDLE);
+      const r = car.rider();
+      if (car.gameSystem().aboard && r && r.phase === 2) { riding++; if (car.navDrawn) drawn++; }
+    }
+    assert.ok(riding > 100, `game ${g}: a fare aboard (${riding} frames)`);
+    if (shown) assert.ok(drawn > riding * 0.9, `game ${g}: drawn ${drawn} of ${riding}`);
+    else assert.equal(drawn, 0, `game ${g}: never drawn`);
+  }
+});
+
 test('a clear is filed in the records (CheckRanking); the save opens 1-4 in the menu once 1-1 to 1-3 are cleared', { skip: !have }, () => {
   const START_EXCELLENT = 0x0C05ABE8;   // what each game calls when it is cleared
   let save = null;
