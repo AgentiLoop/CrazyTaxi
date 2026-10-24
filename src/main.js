@@ -17,6 +17,7 @@ import { TrafficView } from './traffic-view.js';
 import { CabShadow } from './cab-shadow.js';
 import { NavArrow } from './nav-arrow.js';
 import { GameAudio } from './audio.js';
+import { MenuView } from './menu-view.js';
 
 const ASSETS = 'local-assets/';
 const params = new URLSearchParams(location.search);
@@ -146,6 +147,10 @@ async function main() {
   const navArrow = new NavArrow(scene, ASSETS);   // the game's arrow model, in front of the camera, to the destination
   const style = document.createElement('style');
   style.textContent = HUD_CSS;
+  // The Crazy Box draws its own overlay (below): no money board (Put_Pass_Time is skipped there)
+  // or countdown text of the HUD's, and no clock in the games without customers (0-3), which
+  // draw their own counts.
+  if (CRAZY) style.textContent += `#hud-board, #hud-big${car.kyaku ? '' : ', #hud-time'} { display: none !important; }`;
   document.head.append(style);
   const hud = new Hud(hudRoot, ASSETS, digits);
 
@@ -158,6 +163,17 @@ async function main() {
 
   status.remove();
   hudRoot.hidden = false;
+
+  // The Crazy Box's 2D overlay as the game draws it (car.sprites: execDCmini's distance,
+  // timers and counts, the FAULT / EXCELLENT banners, Put_ReadySetGo's READY and GO), from
+  // the game's sprites on a see-through canvas over the 4:3 middle of the picture.
+  let boxView = null, boxCanvas = null;
+  if (CRAZY) {
+    boxCanvas = document.createElement('canvas');
+    boxCanvas.style.cssText = 'position:fixed;top:0;left:50%;height:100vh;aspect-ratio:4/3;transform:translateX(-50%);pointer-events:none';
+    document.body.append(boxCanvas);
+    boxView = new MenuView(boxCanvas, ASSETS, await fetchJson('sprites/manifest.json'));
+  }
 
   let acc = 0, last = performance.now(), frames = 0, fpsT = last, fps = 0;
   // The Crazy Box's end (callTryAgain: 180 frames after a fault, or after the clear): the
@@ -244,6 +260,12 @@ async function main() {
     gameCamera.apply(car.camera());   // camUpdate's view: the traffic was culled with it
     navArrow.update(camera, d.pos, gs.aboard && rider && rider.phase === 2 ? stops[rider.stop].centre : null);
     renderer.render(scene, camera);
+    if (boxView) {
+      // The game's 640 x 480 screen is the 4:3 middle of the window (the vertical view is the game's).
+      const h = Math.round(innerHeight * Math.min(devicePixelRatio, 2)), w = Math.round(h * 4 / 3);
+      if (boxCanvas.width !== w || boxCanvas.height !== h) { boxCanvas.width = w; boxCanvas.height = h; }
+      boxView.render(car.sprites, { clear: true });
+    }
 
     frames++;
     if (now - fpsT > 500) { fps = Math.round(frames * 1000 / (now - fpsT)); frames = 0; fpsT = now; }

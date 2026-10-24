@@ -67,3 +67,24 @@ test('the game ends: callTryAgain 180 frames after the fault sets over (once); i
   assert.equal(car.crazyBox().over, false);
   assert.equal(car.crazyBox().fault, false);
 });
+
+test('the overlay is the game\'s sprites: READY / GO, the jump distance, FAULT', { skip: !have }, () => {
+  const car = make(0);
+  const seen = (n) => car.sprites.some((s) => s.texture === n);
+  car.update(IDLE);
+  assert.ok(seen(117), 'READY (Put_ReadySetGo, SPRCOMM 117)');
+  assert.ok(seen(537) && seen(551), 'Put_JumpDistance (SPRBOX 537, 551)');
+  const ready = car.sprites.find((s) => s.texture === 117);
+  assert.deepEqual(ready.colour.map((c) => +c.toFixed(2)), [1, 0.64, 0.16], 'tinted by the fade colour');
+  assert.ok(car.voices.length > 0, 'the READY voice');
+  let go = false, n = 1;
+  while (!car.crazyBox().fault && n < 1200) {
+    car.update(n > 190 ? { ...IDLE, accel: 1 } : IDLE);
+    go ||= seen(99);
+    n++;
+  }
+  assert.ok(go, 'GO (SPRCOMM 99)');
+  car.update(IDLE);
+  assert.ok(seen(115), 'FAULT (Start_Fault, SPRCOMM 115)');
+  for (const s of car.sprites) assert.ok(Number.isFinite(s.x) && Number.isFinite(s.y) && s.x >= 0 && s.x <= 640 && s.y >= 0 && s.y <= 480, `on screen: ${s.texture} ${s.x},${s.y}`);
+});

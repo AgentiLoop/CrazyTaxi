@@ -344,7 +344,7 @@ export class MenuView {
 
   /**
    * @param {object[]} draws DreamcastMenu.draws
-   * @param {{background?: number, scene?: HTMLCanvasElement|null}} [under] the clear colour (ARGB) and a
+   * @param {{background?: number, clear?: boolean, scene?: HTMLCanvasElement|null}} [under] the clear colour (ARGB; clear: none) and a
    *   3D picture (SelectView) drawn at the figure's depth: over the far sprites (the driver's art,
    *   1/z ~0.002) and under the near ones (the help bar, the timer, 1/z = 1)
    */
@@ -353,8 +353,12 @@ export class MenuView {
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.globalAlpha = 1;
     const bg = under.background ?? 0;
-    ctx.fillStyle = `rgb(${(bg >>> 16) & 255},${(bg >>> 8) & 255},${bg & 255})`;
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    if (under.clear) {   // see-through: the sprites over the 3D picture (the Crazy Box's overlay, src/main.js)
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+    } else {
+      ctx.fillStyle = `rgb(${(bg >>> 16) & 255},${(bg >>> 8) & 255},${bg & 255})`;
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+    }
     let scene = under.scene;
     const k = canvas.width / SCREEN_W;
     const sorted = draws.filter((d) => d.kind !== 'human').map((d, i) => [d, i]).sort((a, b) => a[0].depth - b[0].depth || a[1] - b[1]);

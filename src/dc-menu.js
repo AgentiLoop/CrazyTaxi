@@ -115,6 +115,32 @@ export const PAD = {
   Y: 0x200, X: 0x400,
 };
 
+/**
+ * nlSprPut's record at p (see the header) as MenuView draws it - the menu's sprites and the
+ * game's (the Crazy Box's 2D overlay, src/dc-car.js). The fade colour is the same in both.
+ */
+export function readSprite(cpu, p) {
+  const flags = cpu.r32(p + 52);
+  const mode = cpu.rs32(p + 48);
+  const u0 = cpu.rf(p + 24), v0 = cpu.rf(p + 28), u1 = cpu.rf(p + 32), v1 = cpu.rf(p + 36);
+  const tint = flags & 0x2000 ? [cpu.rf(G.fade), cpu.rf(G.fade + 4), cpu.rf(G.fade + 8)] : [1, 1, 1];
+  return {
+    kind: 'sprite',
+    texture: cpu.r32(p),
+    x: cpu.rf(p + 4), y: cpu.rf(p + 8),
+    depth: 1 / cpu.rf(p + 12),
+    scaleX: cpu.rf(p + 16), scaleY: cpu.rf(p + 20),
+    // The edges' texture coordinates as the PowerVR samples them (u across, v down the quad).
+    uLeft: flags & 0x10 ? 1 - u0 : u0, uRight: flags & 0x10 ? 1 - u1 : u1,
+    vTop: flags & 0x20 ? v0 : 1 - v0, vBottom: flags & 0x20 ? v1 : 1 - v1,
+    angle: cpu.rs32(p + 40) * TURN,
+    anchor: flags & 15 ? [flags & 3, (flags >> 2) & 3] : [1, 1],   // the corner table (1..3) minus this: [1, 1] = top-left at x, y
+    alpha: mode === 0 ? 1 : cpu.rf(p + 44),
+    colour: tint,
+    filter: !!(flags & 0x1000),
+  };
+}
+
 /** The top menu's modes (menu state +4) and the city each starts. */
 export const MODES = ['arcade', 'original', 'crazy box'];
 
@@ -321,26 +347,7 @@ export class DreamcastMenu {
 
   /** nlSprPut's record (see the header). */
   sprite(p) {
-    const cpu = this.cpu;
-    const flags = cpu.r32(p + 52);
-    const mode = cpu.rs32(p + 48);
-    const u0 = cpu.rf(p + 24), v0 = cpu.rf(p + 28), u1 = cpu.rf(p + 32), v1 = cpu.rf(p + 36);
-    const tint = flags & 0x2000 ? [cpu.rf(G.fade), cpu.rf(G.fade + 4), cpu.rf(G.fade + 8)] : [1, 1, 1];
-    this.draws.push({
-      kind: 'sprite',
-      texture: cpu.r32(p),
-      x: cpu.rf(p + 4), y: cpu.rf(p + 8),
-      depth: 1 / cpu.rf(p + 12),
-      scaleX: cpu.rf(p + 16), scaleY: cpu.rf(p + 20),
-      // The edges' texture coordinates as the PowerVR samples them (u across, v down the quad).
-      uLeft: flags & 0x10 ? 1 - u0 : u0, uRight: flags & 0x10 ? 1 - u1 : u1,
-      vTop: flags & 0x20 ? v0 : 1 - v0, vBottom: flags & 0x20 ? v1 : 1 - v1,
-      angle: cpu.rs32(p + 40) * TURN,
-      anchor: flags & 15 ? [flags & 3, (flags >> 2) & 3] : [1, 1],   // the corner table (1..3) minus this: [1, 1] = top-left at x, y
-      alpha: mode === 0 ? 1 : cpu.rf(p + 44),
-      colour: tint,
-      filter: !!(flags & 0x1000),
-    });
+    this.draws.push(readSprite(this.cpu, p));
   }
 
   /** pfPutc's quad for character c (before it runs: the pen is where this glyph goes). */

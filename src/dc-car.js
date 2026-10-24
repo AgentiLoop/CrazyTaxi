@@ -86,6 +86,7 @@
 // 2 pi * 0.006 km/h). Headings: forward = (sin h, 0, cos h).
 
 import { SH4 } from './sh4.js';
+import { readSprite } from './dc-menu.js';
 
 export const STEP = 1 / 60;
 export const WHEEL_RADIUS = 2.964;   // the drawn wheel (cab_0.glb); the physics uses +0x12C = 2.87
@@ -156,6 +157,11 @@ const FN = {
   // TRY AGAIN window (SetWindow(2)), voice 0x275, the songs stopped. The window's code does
   // not run here, so the game calls it again every frame: only the first call runs.
   callTryAgain: 0x0C03FC9A,
+  // The Crazy Box's 2D overlay is the game's own: execDCmini's Put_JumpDistance, the games'
+  // timers and counts, Start_Fault / Start_Excellent's banners, and Put_ReadySetGo (the
+  // READY / GO countdown and its two voices, stubbed in the other modes) all end in
+  // nlSprPut(record), which is kept as `sprites` (readSprite, the menu's) for MenuView.
+  sprPut: 0x0C07D018, putReadySetGo: 0x0C05ACCC,
   entryCarPut: 0x0C043BA2, trafficControl: 0x0C041ACC, executeEvent: 0x0C0296B6, execColliObj: 0x0C031EE4,
   putCarModel: 0x0C0434D0, putTrainModel: 0x0C0437FE,
   putPlayerCar: 0x0C0203E8, putPlayerCarByView: 0x0C0200E4,
@@ -201,7 +207,8 @@ const STUBS = [
   0x0C030868, // PutLandmark (the HUD's destination picture; SetLandmark is captured)
   // The HUD's sprites the game system and the customer code call into (hudDraw itself
   // does not run): the countdown figures, the clock's time bonus roll, the fare
-  // card, "pick someone up", the arrow and the result screen.
+  // card, "pick someone up", the arrow and the result screen; the Crazy Box's
+  // Put_ReadySetGo (0x0C05ACCC) runs in the Crazy Box (FN.putReadySetGo).
   0x0C0521C8, 0x0C0526B8, 0x0C052316, 0x0C0523B2, 0x0C052716, 0x0C052678, 0x0C05273E, 0x0C05296C, 0x0C05ACCC,
 ];
 
@@ -246,6 +253,12 @@ export class DreamcastCar {
     if (data.motions) cpu.load(MOT_BASE, data.motions);
     if (data.people) cpu.load(POL0_BASE, data.people);
     for (const a of STUBS) cpu.hooks.set(a, () => 0);
+    /** @type {object[]} the Crazy Box: the sprites nlSprPut drew this frame (see FN.sprPut) */
+    this.sprites = [];
+    if (opts.city === CRAZY_BOX) {
+      cpu.hooks.delete(FN.putReadySetGo);
+      cpu.hooks.set(FN.sprPut, (c) => { this.sprites.push(readSprite(c, c.r[4] >>> 0)); return 0; });
+    }
     // getNearLineIndexAll runs only from carGroundCheck's out-of-world recovery here: count it, then let it run.
     cpu.hooks.set(0x0C048ED2, () => { this.recoveries++; return false; });
     // SetNewClippingAngle(fov): the clipping half angle the traffic (CheckClippingProject3D)
@@ -530,6 +543,7 @@ export class DreamcastCar {
   update(input) {
     const cpu = this.cpu, g = G.gs;
     this.events = [];
+    this.sprites = [];
     this.sounds = [];
     this.voices = [];
     this.musicCue = false;
