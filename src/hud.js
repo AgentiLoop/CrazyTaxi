@@ -12,12 +12,12 @@
 // keeps its 4:3 look in the corners of a wider window.
 import { formatMoney } from './dc-car.js';
 import { DIGITS_CSS, gameTimeText } from './cartoon-digits.js';
-import { HIRES, hiresLink } from './scene.js';
+import { HIRES, PACK, hiresLink } from './scene.js';
 
 export const RATING_NAMES = ['NORMAL', 'FAST', 'SPEEDY'];
 const LANDMARK_DIR = { 'LANDDC1.AFS': 'landmarks/LANDDC1/', 'LANDDC2.AFS': 'landmarks/LANDDC2/' };
 const CARD_FRAMES = 150;
-const BOARD_PACK = 'local-assets/texture_pack/sprites/SPRGAME/';   // 0177 TOTAL EARNED, 0017 FARE (lit), 0178 footer
+const BOARD_PACK = PACK + 'sprites/SPRGAME/';   // 0177 TOTAL EARNED, 0017 FARE (lit), 0178 footer
 const GEAR_SPRITES = ['sprites/SPRCOMM/0018.png', 'sprites/SPRCOMM/0017.png'];   // [reverse, drive]
 
 export class Hud {

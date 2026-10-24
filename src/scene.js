@@ -2,6 +2,7 @@
 // them - unlit, texture times vertex colour - and the chase camera.
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { KTX2Loader } from 'three/addons/loaders/KTX2Loader.js';
 
 const loader = new GLTFLoader();
 
@@ -50,7 +51,12 @@ export function loadGltf(url, onProgress) {
 // the pack's image cut by the game's alpha, scaled up (most of the pack is JPEG: the shop
 // signs; some of its PNGs' alpha doesn't match the game's: the palm crowns). The menu's sprites
 // (src/menu-view.js) and the HUD's destination pictures (src/hud.js) use it too.
-const PACK = 'local-assets/texture_pack/';
+// With an asset release (VITE_ASSETS=.../lowres/) the pack is its sibling hires/
+// (tools/build_asset_release.mjs): there the models' textures are KTX2 (manifest `ktx2`,
+// tools/ktx2_texture_pack.py: already flipped, scaled to at most 1024 and cut by the game's
+// alpha), swapped in as GPU-compressed textures whatever ?hires=N says.
+const RELEASE = (import.meta.env && import.meta.env.VITE_ASSETS) || '';
+export const PACK = RELEASE ? RELEASE.replace(/[^/]+\/?$/, 'hires/') : 'local-assets/texture_pack/';
 
 /** The longest side a pack image is drawn at for a page's query string (0 = no pack). */
 export function hiresCap(search) {
@@ -84,9 +90,7 @@ export function setHires(on) {
   for (const [source, data] of gameImages) source.data = data;
   for (const [texture, o] of originals) {
     texture.dispose();
-    texture.minFilter = o.minFilter;
-    texture.generateMipmaps = o.generateMipmaps;
-    texture.anisotropy = o.anisotropy;
+    Object.assign(texture, o);
     texture.needsUpdate = true;
   }
   gameImages.clear();
@@ -100,13 +104,17 @@ if (typeof addEventListener !== 'undefined') {
   });
 }
 
+/** A texture's sampling and format before the pack's, put back when H turns the pack off. */
+function keepOriginal(texture) {
+  if (originals.has(texture)) return;
+  const { minFilter, generateMipmaps, anisotropy, isCompressedTexture, mipmaps, format, type } = texture;
+  originals.set(texture, { minFilter, generateMipmaps, anisotropy, isCompressedTexture, mipmaps, format, type });
+}
 /** Swap a pack image into a texture, keeping the game's to put back. */
 function swapIn(texture, img) {
   const source = texture.source;
   if (!gameImages.has(source)) gameImages.set(source, source.data);
-  if (!originals.has(texture)) {
-    originals.set(texture, { minFilter: texture.minFilter, generateMipmaps: texture.generateMipmaps, anisotropy: texture.anisotropy });
-  }
+  keepOriginal(texture);
   source.data = img;
   texture.dispose();
   texture.minFilter = THREE.LinearMipmapLinearFilter;
@@ -164,10 +172,12 @@ const packQueue = [];
 const RANK_MS = 250;
 let viewScene = null, viewCamera = null, rankedAt = -Infinity;
 
-/** The scene and camera whose view orders the pack's downloads (main.js). */
-export function packView(scene, camera) {
+let ktx2 = null;   // KTX2Loader for the release's KTX2 textures: needs the renderer (its formats)
+/** The scene and camera whose view orders the pack's downloads, the renderer drawing them (main.js). */
+export function packView(scene, camera, renderer) {
   viewScene = scene;
   viewCamera = camera;
+  if (renderer && !ktx2) ktx2 = new KTX2Loader().setTranscoderPath(PACK + 'basis/').detectSupport(renderer);
 }
 
 const _frustum = new THREE.Frustum(), _matrix = new THREE.Matrix4(), _sphere = new THREE.Sphere();
@@ -239,6 +249,39 @@ function packImage(t, texture) {
   return p;
 }
 
+const packTextures = new Map();   // key -> Promise<THREE.CompressedTexture | null>
+/** The KTX2 texture of a manifest entry (t.ktx2), queued like packImage's downloads. */
+function packKtx2(t, texture) {
+  const key = t.png + '#ktx2';
+  let p = packTextures.get(key);
+  if (!p) {
+    const req = { url: PACK + t.ktx2, resolve: null, textures: new Set() };
+    packRequests.set(key, req);
+    p = new Promise((resolve) => { req.resolve = resolve; packQueue.push(req); packNext(); })
+      .then((blob) => blob && blob.arrayBuffer())
+      .then((buf) => buf && new Promise((resolve) => ktx2.parse(buf, resolve, () => resolve(null))))
+      .catch(() => null);
+    packTextures.set(key, p);
+  }
+  packRequests.get(key).textures.add(texture.source);
+  return p;
+}
+/** Swap a KTX2 texture's compressed mip chain into a texture in place (clones share its source). */
+function swapInCompressed(texture, k) {
+  const source = texture.source;
+  if (!gameImages.has(source)) gameImages.set(source, source.data);
+  keepOriginal(texture);
+  source.data = k.image;
+  texture.dispose();
+  texture.isCompressedTexture = true;
+  texture.mipmaps = k.mipmaps;
+  texture.format = k.format;
+  texture.type = k.type;
+  texture.minFilter = k.mipmaps.length > 1 ? THREE.LinearMipmapLinearFilter : THREE.LinearFilter;
+  texture.generateMipmaps = false;
+  texture.anisotropy = 4;
+  texture.needsUpdate = true;
+}
 /**
  * The pack's image for an extracted picture ('sprites/SPRADV/0000.png'), stored the same way
  * up as the PNG, or null (no pack or no match). Where the pack's has no alpha but `original`
@@ -285,6 +328,14 @@ async function useTexturePack(gltf) {
     const t = entries.get(packKey(def && parser.json.images[def.source].uri));
     if (!texture || !t) return;
     const source = texture.source;
+    if (t.ktx2 && ktx2) {
+      packKtx2(t, texture).then((k) => {
+        if (!k || !HIRES) return;
+        textureAlphas.set(k.image, textureAlpha({ image: gameImage(source) }));   // drawn as the game's texture is
+        swapInCompressed(texture, k);
+      });
+      return;
+    }
     const image = packImage(t, texture);
     if (!swapped.has(source)) {
       swapped.set(source, image.then((img) => {

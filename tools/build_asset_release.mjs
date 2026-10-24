@@ -4,6 +4,12 @@
 //   - audio: the songs and voices (SONG01/VOICE01, ~150 MB of WAV) become Opus (.ogg) and
 //     AAC (.m4a, for browsers without Ogg Opus); their manifest records get `opus` / `aac`.
 //     The sound-effect samples stay WAV: their loops are a few hundred samples long.
+//   - hires: the texture pack (local-assets/texture_pack, tools/match_texture_pack.py and
+//     shrink_texture_pack.py) for ?hires=1: the models' textures as KTX2 (Basis Universal
+//     ETC1S, tools/ktx2_texture_pack.py; ~5x fewer bytes than the pack's JPEGs, and GPU-
+//     compressed), their small WebPs (the traffic cars' paints are baked from those in the
+//     browser), the menu / HUD sprites and destination pictures as the pack has them, and
+//     three's Basis transcoder (basis/) for KTX2Loader.
 //   - brotli: every .glb/.json/.BIN/.svg/.wav gets a <name>.br next to it (quality 11), which
 //     vite.config.js's middleware serves with Content-Encoding: br. This is the meshes' shrink:
 //     meshopt without quantizing (the geometry must stay exact) makes the glTF larger once
@@ -11,7 +17,7 @@
 // Usage: node tools/build_asset_release.mjs [--only audio,...]
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
+import { copyFileSync, cpSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join, relative } from 'node:path';
 import { cpus } from 'node:os';
 import { brotliCompress, constants } from 'node:zlib';
@@ -21,6 +27,8 @@ const ROOT = join(dirname(new URL(import.meta.url).pathname), '..');
 const SRC = join(ROOT, 'local-assets');
 const OUT = join(ROOT, 'asset-release');
 const LOW = join(OUT, 'lowres');
+const HIGH = join(OUT, 'hires');
+const PACK = join(SRC, 'texture_pack');
 const args = process.argv.slice(2);
 const only = args.includes('--only') ? new Set(args[args.indexOf('--only') + 1].split(',')) : null;
 const stage = (name) => !only || only.has(name);
@@ -45,7 +53,7 @@ function copyTree(from, to, keep = () => true) {
     if (SKIP(name)) continue;
     const a = join(from, name), b = join(to, name);
     if (statSync(a).isDirectory()) copyTree(a, b, keep);
-    else if (keep(a)) { mkdirSync(to, { recursive: true }); cpSync(a, b); }
+    else if (keep(a)) { mkdirSync(to, { recursive: true }); copyFileSync(a, b); }   // follows the pack's symlinks
   }
 }
 
@@ -84,6 +92,22 @@ async function audioStage() {
   console.log(`audio: ${jobs.length} streams -> Opus + AAC`);
 }
 
+async function hiresStage() {
+  const manifest = JSON.parse(readFileSync(join(PACK, 'manifest.json'), 'utf8'));
+  for (const t of manifest.textures) {
+    // the models' textures: KTX2, else (the cars' paints, ?hires=N above the WebPs) the WebP
+    if (!t.link || !t.png.startsWith('textures/') || !t.small) continue;
+    t.link = t.small;
+    t.pack_width = t.small_width;
+    t.pack_height = t.small_height;
+  }
+  mkdirSync(HIGH, { recursive: true });
+  writeFileSync(join(HIGH, 'manifest.json'), JSON.stringify(manifest, null, 1));
+  for (const d of ['small', 'sprites', 'landmarks']) copyTree(join(PACK, d), join(HIGH, d));
+  copyTree(join(ROOT, 'node_modules/three/examples/jsm/libs/basis'), join(HIGH, 'basis'), (p) => !p.endsWith('.md'));
+  const { stdout } = await run('python3', [join(ROOT, 'tools/ktx2_texture_pack.py'), '--out', HIGH], { cwd: ROOT, maxBuffer: 1 << 24 });
+  process.stdout.write(stdout);
+}
 const BROTLI = /\.(glb|json|BIN|svg|wav)$/;
 
 async function brotliStage() {
@@ -96,6 +120,7 @@ async function brotliStage() {
     }
   };
   walk(LOW);
+  if (existsSync(HIGH)) walk(HIGH);
   const squeeze = promisify(brotliCompress);
   let raw = 0, packed = 0;
   await pool(files, async (f) => {
@@ -121,6 +146,7 @@ function size(dir) {
 mkdirSync(LOW, { recursive: true });
 if (stage('copy')) copyStage();
 if (stage('audio')) await audioStage();
+if (stage('hires')) await hiresStage();
 if (stage('brotli')) await brotliStage();
 for (const d of readdirSync(OUT)) {
   if (statSync(join(OUT, d)).isDirectory() && !d.startsWith('.')) console.log(`${relative(ROOT, join(OUT, d))}: ${(size(join(OUT, d)) / 1e6).toFixed(1)} MB`);

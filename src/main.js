@@ -54,6 +54,7 @@ scene.fog = new THREE.Fog(SKY, 5000, 13000);
 // kept and its width the window's: the whole window is the picture, the HUD in its corners.
 const camera = new THREE.PerspectiveCamera(45, innerWidth / innerHeight, 3, 15000);
 const gameCamera = new GameCamera(camera);
+packView(scene, camera, renderer);   // the texture pack's downloads: nearest the view first; its KTX2s' formats
 let car = null;
 
 function resize() {
