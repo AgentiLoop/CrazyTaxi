@@ -784,8 +784,9 @@ export class DreamcastCar {
         const total = fare + timeMoney + tips;
         cpu.w32(g + 0x20, Math.min(CASH_CAP, cpu.r32(g + 0x20) + total));
         cpu.w32(g + 0x2C, 0); cpu.w32(g + 0x28, 0); cpu.w32(g + 0x30, 0);
-        // The drop-off's time bonus, straight onto the clock (frames): NORMAL +30 s, FAST +45 s, SPEEDY +60 s.
-        const bonus = [1800, 2700, 3600][rating];
+        // Arcade rules (the 50 s start) only: the drop-off's time bonus, straight onto the clock (frames):
+        // NORMAL +30 s, FAST +45 s, SPEEDY +60 s. The 3/5/10 minute work (and the Crazy Box) get none.
+        const bonus = cpu.r32(G.menu + 8) === 0 ? [1800, 2700, 3600][rating] : 0;
         cpu.w32(g + 0xC, cpu.rs32(g + 0xC) + bonus);
         this.paid = { rating, fare, timeMoney, tips, total, bonus };
         this.events.push({ type: 'out', ...this.paid });
