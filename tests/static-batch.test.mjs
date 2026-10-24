@@ -108,7 +108,7 @@ test('atlasMaterial: draws as the sample does, with the atlas and vertex colours
   m.onBeforeCompile(shader);
   assert.deepEqual(shader.uniforms.atlasSize.value.toArray(), [4, 4]);
   assert.match(shader.vertexShader, /vTile = tile/);
-  assert.match(shader.fragmentShader, /fract\(u\.x\)/);
+  assert.match(shader.fragmentShader, /fract\(s\.x\)/);
   assert.equal(atlasMaterial(sample, null).onBeforeCompile, THREE.Material.prototype.onBeforeCompile, 'untextured: the stock shader');
 });
 

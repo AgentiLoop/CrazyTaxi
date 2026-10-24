@@ -3,7 +3,7 @@
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { KTX2Loader } from 'three/addons/loaders/KTX2Loader.js';
-import { scaledAtlases, swapAtlases } from './static-batch.js';
+import { scaledAtlases, swapAtlases, pullDecal } from './static-batch.js';
 
 const loader = new GLTFLoader();
 
@@ -600,11 +600,17 @@ export function toUnlit(m, vertexColors, cache, vertexAlphaBelowOne = false) {
         vertexColors,
         transparent: blended,
         alphaTest: blended ? m.alphaTest : kind === 'mask' ? 0.5 : kind === 'partial' ? ALPHA_SOLID : m.alphaTest,
+        // the cut-outs (lattices, fences, leaves) antialiased by the MSAA samples, not crawling at a distance
+        alphaToCoverage: !blended && kind === 'mask',
         opacity: m.opacity,
         side: m.side,
         depthWrite: blended || kind === 'opaque' ? m.depthWrite : true,
+        // the see-through layers (window shadows, grime) lie on their walls: pulled toward the
+        // camera so they don't depth-fight the wall (the PowerVR draws them in order)
+        polygonOffset: kind !== 'opaque', polygonOffsetFactor: kind !== 'opaque' ? -1 : 0, polygonOffsetUnits: kind !== 'opaque' ? -2 : 0,
       });
       x.name = m.name;
+      if (kind !== 'opaque') pullDecal(x);
       return x;
     };
     u = make(false);

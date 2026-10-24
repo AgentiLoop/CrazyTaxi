@@ -44,7 +44,10 @@ const hudRoot = document.getElementById('hud');
 const say = (t) => { status.textContent = t; };
 
 const canvas = document.getElementById('view');
-const renderer = new THREE.WebGLRenderer({ antialias: true, canvas, stencil: true });   // stencil: the shadow volumes
+// stencil: the shadow volumes. logarithmicDepthBuffer: the PowerVR sorts by a float 1/w, so the
+// models lay opaque panels (windows, signs) ~0.01 over their walls; a 24-bit z (near 3) loses
+// that gap past a few hundred units and they flicker, a log depth keeps it out to the far plane
+const renderer = new THREE.WebGLRenderer({ antialias: true, canvas, stencil: true, logarithmicDepthBuffer: true });
 
 const scene = new THREE.Scene();
 const SKY = 0x7fb2e5;

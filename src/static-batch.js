@@ -71,7 +71,7 @@ function collect(roots) {
 
 /** The way a material draws (everything but its texture and colour, which the batch carries itself). */
 function drawKey(m) {
-  return [m.alphaTest, m.side, m.transparent ? 1 : 0, m.opacity, m.depthWrite ? 1 : 0, m.depthTest ? 1 : 0, m.blending].join('|');
+  return [m.alphaTest, m.side, m.transparent ? 1 : 0, m.opacity, m.depthWrite ? 1 : 0, m.depthTest ? 1 : 0, m.blending, m.polygonOffset ? m.polygonOffsetFactor : 0].join('|');
 }
 
 const ATLAS_VERTEX = /* glsl */`
@@ -92,20 +92,36 @@ uniform float atlasScale;
 // the unwrapped uv (the wrap's jumps would pick the smallest level along every seam) and is
 // held to where the ring is still a texel wide (the mipmapped hi-res atlases: PAD texels of
 // the layout, PAD x atlasScale of the picture); the clamp's half texel is that level's.
+// Where a pixel covers more texels than that level filters (roads into the distance: the
+// moire), it is supersampled - up to ATLAS_SUPERSAMPLE x ATLAS_SUPERSAMPLE taps across the
+// pixel's footprint, each wrapped inside the tile, so the average never bleeds into a neighbour.
+export const ATLAS_SUPERSAMPLE = 6;
 const ATLAS_MAP = /* glsl */`
 #ifdef USE_MAP
   vec2 u = vMapUv;
   vec2 scaled = u * vTile.zw / atlasSize;
   vec2 ddx = dFdx(scaled), ddy = dFdy(scaled);
-  float footprint = max(length(ddx), length(ddy)) * atlasSize.x / ${PAD}.0;   // layout texels a pixel covers
+  float texels = atlasSize.x / ${PAD}.0;
+  int nx = int(clamp(ceil(length(ddx) * texels), 1.0, ${ATLAS_SUPERSAMPLE}.0));
+  int ny = int(clamp(ceil(length(ddy) * texels), 1.0, ${ATLAS_SUPERSAMPLE}.0));
+  vec2 dux = dFdx(u) / float(nx), duy = dFdy(u) / float(ny);
+  ddx /= float(nx); ddy /= float(ny);
+  float footprint = max(length(ddx), length(ddy)) * texels;   // layout texels a tap covers
   if (footprint > 1.0) { ddx /= footprint; ddy /= footprint; }
   vec2 inset = 0.5 * clamp(footprint, 1.0 / atlasScale, 1.0) / vTile.zw;
-  vec2 t;
-  if (vWrap.x < 0.5) t.x = fract(u.x);
-  else t.x = clamp(vWrap.x < 1.5 ? u.x : 1.0 - abs(fract(u.x * 0.5) * 2.0 - 1.0), inset.x, 1.0 - inset.x);
-  if (vWrap.y < 0.5) t.y = fract(u.y);
-  else t.y = clamp(vWrap.y < 1.5 ? u.y : 1.0 - abs(fract(u.y * 0.5) * 2.0 - 1.0), inset.y, 1.0 - inset.y);
-  vec4 sampledDiffuseColor = textureGrad(map, (vTile.xy + t * vTile.zw) / atlasSize, ddx, ddy);
+  vec4 sampledDiffuseColor = vec4(0.0);
+  for (int j = 0; j < ny; j++) {
+    for (int i = 0; i < nx; i++) {
+      vec2 s = u + dux * (float(i) - 0.5 * float(nx - 1)) + duy * (float(j) - 0.5 * float(ny - 1));
+      vec2 t;
+      if (vWrap.x < 0.5) t.x = fract(s.x);
+      else t.x = clamp(vWrap.x < 1.5 ? s.x : 1.0 - abs(fract(s.x * 0.5) * 2.0 - 1.0), inset.x, 1.0 - inset.x);
+      if (vWrap.y < 0.5) t.y = fract(s.y);
+      else t.y = clamp(vWrap.y < 1.5 ? s.y : 1.0 - abs(fract(s.y * 0.5) * 2.0 - 1.0), inset.y, 1.0 - inset.y);
+      sampledDiffuseColor += textureGrad(map, (vTile.xy + t * vTile.zw) / atlasSize, ddx, ddy);
+    }
+  }
+  sampledDiffuseColor /= float(nx * ny);
   diffuseColor *= sampledDiffuseColor;
 #endif
 `;
@@ -119,10 +135,13 @@ const ATLAS_MAP = /* glsl */`
 export function atlasMaterial(sample, atlas) {
   const m = new THREE.MeshBasicMaterial({
     map: atlas, vertexColors: true, color: 0xffffff,
-    alphaTest: sample.alphaTest, side: sample.side, transparent: sample.transparent, opacity: 1,
+    alphaTest: sample.alphaTest, alphaToCoverage: sample.alphaToCoverage, side: sample.side, transparent: sample.transparent, opacity: 1,
     depthWrite: sample.depthWrite, depthTest: sample.depthTest, blending: sample.blending,
+    polygonOffset: sample.polygonOffset, polygonOffsetFactor: sample.polygonOffsetFactor, polygonOffsetUnits: sample.polygonOffsetUnits,
   });
   m.name = `atlas ${drawKey(sample)}`;
+  const decal = sample.userData.decal === true;
+  if (decal) pullDecal(m);
   if (atlas) {
     const layout = atlas.userData.layoutSize || atlas.image.width;
     m.userData.atlasScale = { value: atlas.image.width / layout };
@@ -131,10 +150,30 @@ export function atlasMaterial(sample, atlas) {
       shader.uniforms.atlasScale = m.userData.atlasScale;
       shader.vertexShader = ATLAS_VERTEX + shader.vertexShader.replace('#include <uv_vertex>', '#include <uv_vertex>\n  vTile = tile;\n  vWrap = wrap;');
       shader.fragmentShader = ATLAS_FRAGMENT + shader.fragmentShader.replace('#include <map_fragment>', ATLAS_MAP);
+      if (decal) shader.vertexShader = shader.vertexShader.replace('#include <project_vertex>', DECAL_PROJECT);
     };
-    m.customProgramCacheKey = () => 'static-atlas';
+    m.customProgramCacheKey = () => decal ? 'static-atlas-decal' : 'static-atlas';
   }
   return m;
+}
+
+// The see-through layers (window shadows, grime) sit ~0.1 in front of their walls; past a few
+// hundred units that is under the depth buffer's step (near 3, it grows with distance squared)
+// and they flicker. Each vertex is moved toward the eye along its own ray by a fraction of its
+// distance: the same pixels, nearer in depth by DECAL_PULL x distance (2.5 depth steps at
+// 10 000, more nearer in).
+export const DECAL_PULL = 5e-4;
+const DECAL_PROJECT = /* glsl */`#include <project_vertex>
+  mvPosition.xyz *= ${1 - DECAL_PULL};
+  gl_Position = projectionMatrix * mvPosition;`;
+
+/** Marks a material as a see-through layer on a wall and pulls it toward the eye (DECAL_PULL). */
+export function pullDecal(m) {
+  m.userData.decal = true;
+  m.onBeforeCompile = (shader) => {
+    shader.vertexShader = shader.vertexShader.replace('#include <project_vertex>', DECAL_PROJECT);
+  };
+  m.customProgramCacheKey = () => 'decal';
 }
 
 /**
