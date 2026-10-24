@@ -22,13 +22,25 @@ const volume = (side, zPass) => new THREE.MeshBasicMaterial({
   side, colorWrite: false, depthWrite: false, transparent: true, fog: false,
   stencilWrite: true, stencilFunc: THREE.AlwaysStencilFunc, stencilZPass: zPass,
 });
+/**
+ * The darkening pass: halves the colour the way the game does, before its fog is mixed
+ * in. Black at 50% blended over an already fogged pixel left a dark box on the fogged
+ * road at distance (and none close up on a black road); fogging this pass's black adds
+ * back 0.5 x fogFactor x fogColor, giving dst / 2 + fogFactor / 2 x fogColor =
+ * mix(colour / 2, fogColor, fogFactor) for any road colour, so a far shadow fades out.
+ */
+export function shadowDarken(params) {
+  return new THREE.MeshBasicMaterial({
+    color: 0x000000, opacity: 0.5, transparent: true, depthWrite: false, depthTest: false, fog: true,
+    stencilWrite: true, stencilRef: 0, stencilFunc: THREE.NotEqualStencilFunc, stencilZPass: THREE.ZeroStencilOp,
+    ...params,
+  });
+}
+
 const SHADOW_PASSES = [
   [volume(THREE.FrontSide, THREE.IncrementWrapStencilOp), 10],
   [volume(THREE.BackSide, THREE.DecrementWrapStencilOp), 10],
-  [new THREE.MeshBasicMaterial({
-    color: 0x000000, opacity: 0.5, transparent: true, depthWrite: false, depthTest: false, fog: false,
-    stencilWrite: true, stencilRef: 0, stencilFunc: THREE.NotEqualStencilFunc, stencilZPass: THREE.ZeroStencilOp,
-  }), 11],
+  [shadowDarken(), 11],
 ];
 
 /** Replace a shadow mesh's (opaque, garbage-coloured) material by the three volume passes. */

@@ -24,6 +24,7 @@
 // shadowed bit and clears the stencil. The darkness is the traffic shadows' guess
 // (50%). Needs a renderer with stencil: true.
 import * as THREE from 'three';
+import { shadowDarken } from './traffic-view.js';
 
 const SET_LIGHT = 0x0C02FE80, LIGHT = 0x0C26BEE0;
 const COURSE_MODE = 0x0C1EBF2C, MINI_GAME_NO = 0x0C1EBF34;
@@ -47,11 +48,7 @@ const collect = new THREE.MeshBasicMaterial({
   stencilWrite: true, stencilFunc: THREE.EqualStencilFunc, stencilRef: 1, stencilFuncMask: 1,
   stencilZPass: THREE.IncrementStencilOp,
 });
-const darken = new THREE.MeshBasicMaterial({
-  side: THREE.DoubleSide, color: 0x000000, opacity: 0.5, transparent: true, depthWrite: false, depthTest: false,
-  fog: false, stencilWrite: true, stencilFunc: THREE.NotEqualStencilFunc, stencilRef: 0, stencilFuncMask: 0x7E,
-  stencilZPass: THREE.ZeroStencilOp,
-});
+const darken = shadowDarken({ side: THREE.DoubleSide, stencilFuncMask: 0x7E });
 
 /** One piece's volume this frame, in the body's frame: [x, y, z, ...] triangles (see the header). */
 export function pieceVolume(piece, light, out) {
