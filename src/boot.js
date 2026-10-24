@@ -17,7 +17,8 @@ import '@fontsource/archivo-black/400.css';
 import '@fontsource/roboto-condensed/700.css';
 import '@fontsource/oswald/500.css';
 
-const ASSETS = 'local-assets/';
+// The asset folder: local-assets/, or the asset release's (VITE_ASSETS=... at build or dev time).
+const ASSETS = (import.meta.env && import.meta.env.VITE_ASSETS) || 'local-assets/';
 const STEP = 1000 / 60;
 const KEYS = {
   ArrowUp: PAD.UP, KeyW: PAD.UP, ArrowDown: PAD.DOWN, KeyS: PAD.DOWN,
@@ -51,7 +52,7 @@ async function runMenu(box, cab) {
   ]);
   // START on the title asks for the menu loop (SONG01 0, the drum beat) and the voice
   // (VOICE01 672) at once: fetch them now so they don't start seconds late.
-  if (audio.ctx) for (const wav of ['SONG01/0000.wav', 'VOICE01/0672.wav']) audio.buffer(wav).catch(() => {});
+  if (audio.ctx) for (const sound of [audio.songs[0], audio.voiceFiles[672]]) audio.buffer(sound).catch(() => {});
   const startAudio = () => audio.start();
   for (const ev of ['keydown', 'pointerdown']) addEventListener(ev, startAudio);
   const menu = new DreamcastMenu(exe, { title: true, box, cab, motions, audio: audio.ctx ? audio : null, save: loadSave(localStorage) });

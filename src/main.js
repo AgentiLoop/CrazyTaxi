@@ -21,7 +21,8 @@ import { MenuView } from './menu-view.js';
 import { loadSave, storeSave, PAD } from './dc-menu.js';
 import { BoxObjects } from './box-objects.js';
 
-const ASSETS = 'local-assets/';
+// The asset folder: local-assets/, or the asset release's (VITE_ASSETS=... at build or dev time).
+const ASSETS = (import.meta.env && import.meta.env.VITE_ASSETS) || 'local-assets/';
 const params = new URLSearchParams(location.search);
 // ?city=crazybox&game=N: the Crazy Box's game N (MiniGame_No 0-15, the menu's box - 2); its
 // course is the Crazy Box's (BINC3, OBJDC3), but game 15 is driven in the Arcade city.

@@ -31,6 +31,7 @@
 const BANKS = { 0: 'SNDDC0.BIN', 1: 'SNDDC1.BIN', 3: 'SNDDC2.BIN', 4: 'SNDDC3.BIN' };
 const NOT_PLAYING = 0x58764;
 const LOOP_MIN = 100;   // samples: shorter loops are a one-shot's held tail
+const OPUS = typeof Audio !== 'undefined' && new Audio().canPlayType('audio/ogg; codecs=opus') !== '';
 
 export class GameAudio {
   constructor(assets) {
@@ -89,14 +90,20 @@ export class GameAudio {
     for (const slot of this.ics) this.icsKey(slot, 0);
   }
 
-  buffer(path) {
-    let p = this.buffers.get(path);
+  /**
+   * A manifest sound's decoded samples. The asset release (tools/build_asset_release.mjs)
+   * gives the streams Opus (`opus`, .ogg) and AAC (`aac`, .m4a) files in place of the WAV:
+   * the first of them this browser decodes is used.
+   */
+  buffer(sound) {
+    let p = this.buffers.get(sound.wav);
     if (!p) {
-      p = fetch(`${this.assets}audio/${path}`).then((r) => {
+      const files = sound.opus || sound.aac ? (OPUS ? [sound.opus, sound.aac] : [sound.aac, sound.opus]).filter(Boolean) : [sound.wav];
+      p = files.reduce((prev, path) => prev.catch(() => fetch(`${this.assets}audio/${path}`).then((r) => {
         if (!r.ok) throw new Error(`${path}: HTTP ${r.status}`);
         return r.arrayBuffer();
-      }).then((bytes) => this.ctx.decodeAudioData(bytes));
-      this.buffers.set(path, p);
+      }).then((bytes) => this.ctx.decodeAudioData(bytes))), Promise.reject(new Error(`${sound.wav}: no file`)));
+      this.buffers.set(sound.wav, p);
     }
     return p;
   }
@@ -126,7 +133,7 @@ export class GameAudio {
     gain.connect(this.master);
     const token = { source: null, gain, stopped: false };
     if (loops) this.held.set(id, token);
-    this.buffer(sample.wav).then((buffer) => {
+    this.buffer(sample).then((buffer) => {
       if (token.stopped) return;
       const source = this.ctx.createBufferSource();
       source.buffer = buffer;
@@ -193,7 +200,7 @@ export class GameAudio {
           voice.gain.connect(slot.gain);
           slot.splits.set(split.id, voice);
           const sample = pack.sounds[split.sample];
-          this.buffer(sample.wav).then((buffer) => {
+          this.buffer(sample).then((buffer) => {
             if (voice.stopped) return;
             const source = this.ctx.createBufferSource();
             source.buffer = buffer;
@@ -230,7 +237,7 @@ export class GameAudio {
     gain.connect(this.master);
     const v = { source: null, gain, start: this.ctx.currentTime, duration: sound.samples / sound.rate, file, stopped: false };
     this.voices[ch] = v;
-    this.buffer(sound.wav).then((buffer) => {
+    this.buffer(sound).then((buffer) => {
       if (v.stopped) return;
       const source = this.ctx.createBufferSource();
       source.buffer = buffer;
@@ -288,7 +295,7 @@ export class GameAudio {
     const s = { file, gain, source: null, cued: false, start: this.ctx.currentTime - offset, duration: sound.samples / sound.rate, db: this.song ? this.song.db : 0, stopped: false };
     gain.gain.value = dbGain(s.db);
     this.song = s;
-    this.buffer(sound.wav).then((buffer) => {
+    this.buffer(sound).then((buffer) => {
       if (s.stopped) return;
       const source = this.ctx.createBufferSource();
       source.buffer = buffer;

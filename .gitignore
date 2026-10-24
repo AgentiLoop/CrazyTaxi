@@ -12,3 +12,4 @@ dist/
 local-assets/
 __pycache__/
 *.pyc
+asset-release/
