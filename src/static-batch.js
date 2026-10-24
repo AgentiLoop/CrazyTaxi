@@ -15,8 +15,9 @@
 //     applies the wrap inside the tile.
 // The picture is the same (unlit texture x colour, the draw-order kinds of src/scene.js
 // kept); the world draws in ~100 calls instead of ~3,000. ?batch=0 turns it off (the
-// draw-order tool reads the meshes by name); the hi-res pack (?hires=1) keeps the single
-// meshes too, its textures being far too large for an atlas.
+// draw-order tool reads the meshes by name). The hi-res pack (?hires=1, or H) draws the
+// same batches from atlases SCALE times the size, the same layout with the pack's pictures in
+// the tiles (scaledAtlases; src/scene.js packBatched builds them and swaps them in).
 import * as THREE from 'three';
 
 export const ATLAS_SIZE = 2048;
@@ -83,25 +84,38 @@ const ATLAS_FRAGMENT = /* glsl */`
 varying vec4 vTile;
 varying vec2 vWrap;
 uniform vec2 atlasSize;
+uniform float atlasScale;
 `;
 // Replaces <map_fragment>: the uv wrapped inside the tile (repeat: the ring of wrapped
 // texels makes the filtering right across the seam; clamp and mirror: kept half a texel
-// inside, as the hardware clamps), then the atlas.
+// inside, as the hardware clamps), then the atlas. The texture's level of detail comes from
+// the unwrapped uv (the wrap's jumps would pick the smallest level along every seam) and is
+// held to where the ring is still a texel wide (the mipmapped hi-res atlases: PAD texels of
+// the layout, PAD x atlasScale of the picture); the clamp's half texel is that level's.
 const ATLAS_MAP = /* glsl */`
 #ifdef USE_MAP
   vec2 u = vMapUv;
-  vec2 inset = 0.5 / vTile.zw;
+  vec2 scaled = u * vTile.zw / atlasSize;
+  vec2 ddx = dFdx(scaled), ddy = dFdy(scaled);
+  float footprint = max(length(ddx), length(ddy)) * atlasSize.x / ${PAD}.0;   // layout texels a pixel covers
+  if (footprint > 1.0) { ddx /= footprint; ddy /= footprint; }
+  vec2 inset = 0.5 * clamp(footprint, 1.0 / atlasScale, 1.0) / vTile.zw;
   vec2 t;
   if (vWrap.x < 0.5) t.x = fract(u.x);
   else t.x = clamp(vWrap.x < 1.5 ? u.x : 1.0 - abs(fract(u.x * 0.5) * 2.0 - 1.0), inset.x, 1.0 - inset.x);
   if (vWrap.y < 0.5) t.y = fract(u.y);
   else t.y = clamp(vWrap.y < 1.5 ? u.y : 1.0 - abs(fract(u.y * 0.5) * 2.0 - 1.0), inset.y, 1.0 - inset.y);
-  vec4 sampledDiffuseColor = texture2D(map, (vTile.xy + t * vTile.zw) / atlasSize);
+  vec4 sampledDiffuseColor = textureGrad(map, (vTile.xy + t * vTile.zw) / atlasSize, ddx, ddy);
   diffuseColor *= sampledDiffuseColor;
 #endif
 `;
 
-/** A MeshBasicMaterial drawing one atlas the way `sample` (a batched material) draws. */
+/**
+ * A MeshBasicMaterial drawing one atlas the way `sample` (a batched material) draws. Its
+ * `atlasSize` is the layout's (ATLAS_SIZE, the tiles' texels; atlas.userData.layoutSize when
+ * the picture is larger): a scaled atlas is swapped in as `map` with userData.atlasScale.value
+ * = its scale.
+ */
 export function atlasMaterial(sample, atlas) {
   const m = new THREE.MeshBasicMaterial({
     map: atlas, vertexColors: true, color: 0xffffff,
@@ -110,8 +124,11 @@ export function atlasMaterial(sample, atlas) {
   });
   m.name = `atlas ${drawKey(sample)}`;
   if (atlas) {
+    const layout = atlas.userData.layoutSize || atlas.image.width;
+    m.userData.atlasScale = { value: atlas.image.width / layout };
     m.onBeforeCompile = (shader) => {
-      shader.uniforms.atlasSize = { value: new THREE.Vector2(atlas.image.width, atlas.image.height) };
+      shader.uniforms.atlasSize = { value: new THREE.Vector2(layout, layout) };
+      shader.uniforms.atlasScale = m.userData.atlasScale;
       shader.vertexShader = ATLAS_VERTEX + shader.vertexShader.replace('#include <uv_vertex>', '#include <uv_vertex>\n  vTile = tile;\n  vWrap = wrap;');
       shader.fragmentShader = ATLAS_FRAGMENT + shader.fragmentShader.replace('#include <map_fragment>', ATLAS_MAP);
     };
@@ -221,51 +238,118 @@ export function planBatches(roots, { cell = CELL, atlasSize = ATLAS_SIZE } = {})
   return { meshes, tiles, groups: [...groups.values()], atlasCount: tiles.length ? Math.max(...tiles.map((t) => t.atlas)) + 1 : 0 };
 }
 
+/** An empty atlas of `size` texels on the GPU (a layout of `layoutSize`; mipmapped if asked). */
+function newAtlas(renderer, size, layoutSize, mipmapped, name) {
+  // Storage only (source.dataReady false: nothing to upload); the tiles are copied in.
+  const tex = new THREE.DataTexture(null, size, size, THREE.RGBAFormat, THREE.UnsignedByteType);
+  tex.source.dataReady = false;
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.flipY = false;
+  tex.premultiplyAlpha = false;
+  tex.generateMipmaps = mipmapped;   // allocates the levels; generated once the tiles are in (mipmapAtlas)
+  tex.minFilter = mipmapped ? THREE.LinearMipmapLinearFilter : THREE.LinearFilter;
+  tex.magFilter = THREE.LinearFilter;
+  tex.anisotropy = mipmapped ? 4 : 1;
+  tex.needsUpdate = true;
+  tex.name = name;
+  tex.userData.layoutSize = layoutSize;
+  renderer.initTexture(tex);
+  tex.generateMipmaps = false;   // not after every copy
+  return tex;
+}
+
+/** Generate a filled atlas's mipmaps. */
+function mipmapAtlas(renderer, tex) {
+  const gl = renderer.getContext();
+  renderer.state.bindTexture(gl.TEXTURE_2D, renderer.properties.get(tex).__webglTexture);
+  gl.generateMipmap(gl.TEXTURE_2D);
+  tex.generateMipmaps = true;
+}
+
+const _box = new THREE.Box2(), _at = new THREE.Vector2();
+
+/**
+ * Copy a tile's picture (`src`, a texture of tile.width x tile.height x scale) and its ring of
+ * wrapped edges (PAD x scale texels: the opposite edges, what a repeat shows next; the
+ * corners from the opposite corners) into its place in `dst`, scaled.
+ */
+function copyTile(renderer, src, dst, t, scale) {
+  const copy = (x0, y0, x1, y1, dx, dy) => {
+    _box.min.set(x0, y0); _box.max.set(x1, y1); _at.set(dx, dy);
+    renderer.copyTextureToTexture(src, dst, _box, _at);
+  };
+  const w = t.width * scale, h = t.height * scale, x = t.x * scale, y = t.y * scale, p = PAD * scale;
+  copy(0, 0, w, h, x, y);
+  copy(w - p, 0, w, h, x - p, y);
+  copy(0, 0, p, h, x + w, y);
+  copy(0, h - p, w, h, x, y - p);
+  copy(0, 0, w, p, x, y + h);
+  copy(w - p, h - p, w, h, x - p, y - p);
+  copy(0, h - p, p, h, x + w, y - p);
+  copy(w - p, 0, w, p, x - p, y + h);
+  copy(0, 0, p, p, x + w, y + h);
+}
+
 /**
  * Fill the atlases on the GPU: each tile's picture and its one-texel ring of wrapped edges,
  * copied from the glTF textures' images (exact: no canvas, so no premultiplied alpha).
  */
 function buildAtlases(renderer, tiles, sources, atlasCount, atlasSize) {
   const atlases = [];
-  for (let i = 0; i < atlasCount; i++) {
-    const tex = new THREE.DataTexture(new Uint8Array(atlasSize * atlasSize * 4), atlasSize, atlasSize, THREE.RGBAFormat, THREE.UnsignedByteType);
-    tex.colorSpace = THREE.SRGBColorSpace;
-    tex.flipY = false;
-    tex.premultiplyAlpha = false;
-    tex.generateMipmaps = false;
-    tex.minFilter = THREE.LinearFilter;
-    tex.magFilter = THREE.LinearFilter;
-    tex.needsUpdate = true;
-    tex.name = `static atlas ${i}`;
-    renderer.initTexture(tex);
-    atlases.push(tex);
-  }
-  const box = new THREE.Box2(), at = new THREE.Vector2();
-  const copy = (src, dst, x0, y0, x1, y1, dx, dy) => {
-    box.min.set(x0, y0); box.max.set(x1, y1); at.set(dx, dy);
-    renderer.copyTextureToTexture(src, dst, box, at);
-  };
-  for (const t of tiles) {
-    const src = sources.get(t.id), dst = atlases[t.atlas];
-    const w = t.width, h = t.height, x = t.x, y = t.y;
-    copy(src, dst, 0, 0, w, h, x, y);
-    // The ring: the opposite edges (what a repeat shows next), the corners from the opposite corners.
-    copy(src, dst, w - 1, 0, w, h, x - 1, y);
-    copy(src, dst, 0, 0, 1, h, x + w, y);
-    copy(src, dst, 0, h - 1, w, h, x, y - 1);
-    copy(src, dst, 0, 0, w, 1, x, y + h);
-    copy(src, dst, w - 1, h - 1, w, h, x - 1, y - 1);
-    copy(src, dst, 0, h - 1, 1, h, x + w, y - 1);
-    copy(src, dst, w - 1, 0, w, 1, x - 1, y + h);
-    copy(src, dst, 0, 0, 1, 1, x + w, y + h);
-  }
+  for (let i = 0; i < atlasCount; i++) atlases.push(newAtlas(renderer, atlasSize, atlasSize, false, `static atlas ${i}`));
+  for (const t of tiles) copyTile(renderer, sources.get(t.id), atlases[t.atlas], t, 1);
   return atlases;
+}
+
+/**
+ * The atlases of a batched world (batchStatic's group.batch) again at `scale` times the size,
+ * the same layout (the meshes' tiles and the materials' atlasSize stay in the layout's
+ * texels): each tile `imageOf(source)` - a Promise of a picture of any size (the hi-res
+ * pack's), drawn at the tile's - or, for null, the game's own texture scaled up. Mipmapped
+ * (the shader holds the level of detail within the ring). Resolves to the atlases; swap
+ * them in with swapAtlases.
+ */
+export async function scaledAtlases(renderer, batch, scale, imageOf) {
+  const { tiles, sources, atlasCount, atlasSize } = batch;
+  const atlases = [];
+  for (let i = 0; i < atlasCount; i++) atlases.push(newAtlas(renderer, atlasSize * scale, atlasSize, true, `static atlas ${i} x${scale}`));
+  const images = tiles.map((t) => imageOf(t.id));   // all asked for at once: the pack's queue orders them
+  for (let i = 0; i < tiles.length; i++) {
+    const t = tiles[i], pack = await images[i];
+    const bitmap = await createImageBitmap(pack || sources.get(t.id).image, {
+      resizeWidth: t.width * scale, resizeHeight: t.height * scale, resizeQuality: pack ? 'high' : 'pixelated',
+      premultiplyAlpha: 'none', colorSpaceConversion: 'none',
+    });
+    const src = new THREE.Texture(bitmap);
+    src.flipY = false;
+    src.premultiplyAlpha = false;
+    src.colorSpace = THREE.SRGBColorSpace;
+    copyTile(renderer, src, atlases[t.atlas], t, scale);
+    src.dispose();
+    bitmap.close();
+  }
+  for (const tex of atlases) mipmapAtlas(renderer, tex);
+  return atlases;
+}
+
+/** Draw a batched world (batchStatic's group) from `atlases` (its own, or scaledAtlases'). */
+export function swapAtlases(batched, atlases) {
+  const { materials } = batched.batch;
+  for (const [index, material] of materials) {
+    if (index < 0) continue;
+    const atlas = atlases[index];
+    material.map = atlas;
+    material.userData.atlasScale.value = atlas.image.width / (atlas.userData.layoutSize || atlas.image.width);
+    batched.userData.atlasScale = material.userData.atlasScale.value;   // the probe reads it
+  }
 }
 
 /**
  * Replace the meshes under `roots` with the batched ones (a Group "static" added to
  * `scene`); the emptied roots leave the scene. Returns the group ({ atlases, meshes:
- * batched count, from: original count } in userData).
+ * batched count, from: original count } in userData; the layout for scaledAtlases -
+ * { tiles, sources, atlasCount, atlasSize, atlases, materials: [[atlas index, material]] } -
+ * as .batch).
  */
 export function batchStatic(scene, roots, renderer, options = {}) {
   const cellSize = options.cell || CELL, atlasSize = options.atlasSize || ATLAS_SIZE;
@@ -285,7 +369,10 @@ export function batchStatic(scene, roots, renderer, options = {}) {
     mesh.renderOrder = g.renderOrder;
     out.add(mesh);
   }
-  for (const o of meshes) o.removeFromParent();
+  for (const o of meshes) {
+    o.removeFromParent();
+    o.geometry.dispose();   // never uploaded; this and the parser's caches (scene.js releaseGltf) free the arrays
+  }
   // Prune what is left empty; a root with nothing left leaves the scene.
   const prune = (node) => {
     for (const c of node.children.slice()) prune(c);
@@ -293,6 +380,7 @@ export function batchStatic(scene, roots, renderer, options = {}) {
   };
   for (const root of roots) prune(root);
   out.userData = { atlases: atlases.length, tiles: tiles.length, meshes: out.children.length, from: meshes.length };
+  out.batch = { tiles, sources, atlasCount, atlasSize, atlases, materials: [...materials].map(([k, m]) => [parseInt(k, 10), m]) };
   scene.add(out);
   return out;
 }

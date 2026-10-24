@@ -3,7 +3,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import * as THREE from 'three';
-import { packTiles, wrapCode, mergeParts, planBatches, atlasMaterial, PAD } from '../src/static-batch.js';
+import { packTiles, wrapCode, mergeParts, planBatches, atlasMaterial, swapAtlases, PAD } from '../src/static-batch.js';
 
 test('packTiles: every tile inside its atlas, ringed by PAD, none overlapping', () => {
   const tiles = [];
@@ -110,4 +110,29 @@ test('atlasMaterial: draws as the sample does, with the atlas and vertex colours
   assert.match(shader.vertexShader, /vTile = tile/);
   assert.match(shader.fragmentShader, /fract\(u\.x\)/);
   assert.equal(atlasMaterial(sample, null).onBeforeCompile, THREE.Material.prototype.onBeforeCompile, 'untextured: the stock shader');
+});
+
+test('scaled atlases: the layout size stays the uniform, atlasScale follows the map swapAtlases sets', () => {
+  const sample = new THREE.MeshBasicMaterial();
+  const atlas = new THREE.DataTexture(null, 4, 4);
+  const big = new THREE.DataTexture(null, 16, 16);
+  big.userData.layoutSize = 4;
+  const m = atlasMaterial(sample, atlas);
+  const shader = { uniforms: {}, vertexShader: '#include <uv_vertex>', fragmentShader: '#include <map_fragment>' };
+  m.onBeforeCompile(shader);
+  assert.equal(shader.uniforms.atlasScale.value, 1);
+  assert.match(shader.fragmentShader, /textureGrad\(map/, 'the level of detail from the unwrapped uv');
+  const batched = { userData: {}, batch: { materials: [[0, m], [-1, atlasMaterial(sample, null)]] } };
+  swapAtlases(batched, [big]);
+  assert.equal(m.map, big);
+  assert.equal(shader.uniforms.atlasScale.value, 4, 'the compiled shader sees the new scale');
+  assert.equal(batched.userData.atlasScale, 4);
+  swapAtlases(batched, [atlas]);
+  assert.equal(m.map, atlas);
+  assert.equal(shader.uniforms.atlasScale.value, 1);
+  const bigM = atlasMaterial(sample, big);
+  const s2 = { uniforms: {}, vertexShader: '', fragmentShader: '' };
+  bigM.onBeforeCompile(s2);
+  assert.deepEqual(s2.uniforms.atlasSize.value.toArray(), [4, 4], 'a scaled atlas: the layout size, not the picture');
+  assert.equal(s2.uniforms.atlasScale.value, 4);
 });

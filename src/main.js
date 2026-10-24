@@ -9,7 +9,7 @@ import { KIND_NAMES } from './collision.js';
 import { DreamcastCar, STEP, WHEEL_RADIUS, CRAZY_BOX, carFiles, courseModeOf } from './dc-car.js';
 import { Input } from './input.js';
 import { CITIES } from './start.js';
-import { loadGltf, makeUnlit, GameCamera, packView, HIRES } from './scene.js';
+import { loadGltf, releaseGltf, packBatched, makeUnlit, GameCamera, packView, pixelRatio } from './scene.js';
 import { batchStatic } from './static-batch.js';
 import { PeopleView } from './people.js';
 import { Hud, HUD_CSS } from './hud.js';
@@ -43,7 +43,6 @@ const say = (t) => { status.textContent = t; };
 
 const canvas = document.getElementById('view');
 const renderer = new THREE.WebGLRenderer({ antialias: true, canvas, stencil: true });   // stencil: the shadow volumes
-renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
 
 const scene = new THREE.Scene();
 const SKY = 0x7fb2e5;
@@ -57,6 +56,7 @@ const gameCamera = new GameCamera(camera);
 let car = null;
 
 function resize() {
+  renderer.setPixelRatio(pixelRatio(innerWidth, innerHeight, devicePixelRatio));   // at most MAX_PIXELS (scene.js)
   renderer.setSize(innerWidth, innerHeight);
   camera.aspect = innerWidth / innerHeight;
   camera.updateProjectionMatrix();
@@ -152,8 +152,13 @@ async function main() {
     propsGltf.scene.traverse((o) => { if (o.userData.runs) o.visible = o.userData.runs.includes(run); });
   }
   // The city and its set objects merged into a few draw calls (src/static-batch.js): the
-  // 60 fps need it. Off with ?batch=0, and with the hi-res pack (its textures don't atlas).
-  const batched = params.get('batch') !== '0' && !HIRES ? batchStatic(scene, [cityGltf.scene, propsGltf.scene], renderer) : null;
+  // 60 fps need it. Off with ?batch=0. The hi-res pack draws the batches from scaled atlases
+  // (scene.js packBatched), on now (?hires=1) or when H turns it on.
+  const batched = params.get('batch') !== '0' ? batchStatic(scene, [cityGltf.scene, propsGltf.scene], renderer) : null;
+  if (batched) {
+    packBatched(batched, [cityGltf, propsGltf], renderer);
+    releaseGltf(cityGltf); releaseGltf(propsGltf);   // the single meshes' arrays go back to the browser
+  }
   // Browsers play nothing before a gesture: the first key or click starts the sound
   // (a song cued during the countdown picks up where it would be).
   for (const ev of ['keydown', 'pointerdown']) addEventListener(ev, () => audio.start(), { once: true });

@@ -172,7 +172,7 @@ let SAMPLE_SCRIPT = """
     const info = g.renderer.info;
     Object.assign(r, { state: gs.state, kmh: Math.round(g.car.kmh()), calls: info.render.calls, tris: info.render.triangles,
       size: [g.renderer.domElement.width, g.renderer.domElement.height], dpr: devicePixelRatio,
-      textures: info.memory.textures, geometries: info.memory.geometries, traffic: g.traffic.drawn, people: g.people.drawn,
+      textures: info.memory.textures, geometries: info.memory.geometries, programs: info.programs.length, traffic: g.traffic.drawn, people: g.people.drawn,
       errors: p.errors ? p.errors.length : 0, lastError: p.errors && p.errors.length ? p.errors[p.errors.length - 1] : undefined,
       batched: g.batched ? g.batched.userData : null });
     window.__probeT = (window.__probeT || 0) + 1;
@@ -323,7 +323,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
                 } else if let error = error {
                     sample["error"] = error.localizedDescription
                 }
-                if let mb = footprintMB(pid: webPid) { sample["footprintMB"] = Int(mb.rounded()) }
+                if let mb = footprintMB(pid: webPid) { sample["footprintMB"] = Int(mb.rounded()); sample["pid"] = Int(webPid) }
                 if let line = try? JSONSerialization.data(withJSONObject: sample, options: [.sortedKeys]) { print(String(decoding: line, as: UTF8.self)) }
                 samples.append(sample)
                 if elapsed >= probeSeconds { finishProbe() }

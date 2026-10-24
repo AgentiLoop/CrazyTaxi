@@ -27,7 +27,9 @@ tools/mac-probe.sh 30             # unattended 60 fps check in the app: one JSON
 The world (city and set objects) is merged into a few draw calls at load
 (`src/static-batch.js`: one texture atlas, one mesh per cell and way of drawing) -
 ~300 draw calls a frame instead of ~3,000, 60 fps in the app on an M4 at 2560 x 1920
-where it was 40-47. `?batch=0` draws the single meshes again (the hi-res pack does too).
+where it was 40-47. `?batch=0` draws the single meshes again. The hi-res pack (`?hires=1`,
+or H in game) draws the same batches from atlases four times the size with the pack's
+pictures in the tiles (a 64 x 64 game texture is the pack at 256; 8192 x 8192, mipmapped).
 
 Keys: arrows / WASD drive and steer, X = Drive gear (B), Z = Reverse gear (A),
 R restart. Stop beside a customer (inside their circle) to pick them up, stop at
