@@ -32,7 +32,10 @@ or H in game) draws the same batches from atlases four times the size with the p
 pictures in the tiles (a 64 x 64 game texture is the pack at 256; 8192 x 8192, mipmapped).
 
 Keys: arrows / WASD drive and steer, X = Drive gear (B), Z = Reverse gear (A),
-R restart. Stop beside a customer (inside their circle) to pick them up, stop at
+R restart. Xbox controller (any standard-layout pad): left stick / D-pad steer, RT
+accelerate, LT brake (analog), B or RB Drive gear, A or LB Reverse gear, Menu (≡) pause,
+View restart, Y hi-res pack; in the menus D-pad / left stick, A choose, B back, Menu = Start.
+Stop beside a customer (inside their circle) to pick them up, stop at
 the landmark (the arrow and picture show where) to drop them off.
 
 ## What is in the game so far

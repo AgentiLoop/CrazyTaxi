@@ -6,7 +6,9 @@
 // Keys in the menu, as the Dreamcast pad: arrows / WASD = d-pad, Z / Enter / Space =
 // A (choose), X / Escape / Backspace = B (back), Q = Start. On the title, which only
 // takes START on the Dreamcast, the A keys press START too.
+// An Xbox pad: D-pad / left stick, A, B, X, Y and Menu (≡) = Start (src/input.js padBits).
 import { DreamcastMenu, PAD, MODES, loadSave } from './dc-menu.js';
+import { padBits } from './input.js';
 import { MenuView, FONTS } from './menu-view.js';
 import { SelectView } from './select-view.js';
 import { letterbox } from './scene.js';
@@ -87,7 +89,9 @@ async function runMenu(box, cab) {
       last = now;
       while (acc >= STEP) {
         acc -= STEP;
-        if (menu.update(menu.screen === 'title' && held & PAD.A ? held | PAD.START : held)) continue;
+        const pad = held | padBits();   // the keyboard and an Xbox pad (src/input.js)
+        if (pad) startAudio();   // a pad press starts the sound as a key does
+        if (menu.update(menu.screen === 'title' && pad & PAD.A ? pad | PAD.START : pad)) continue;
         const city = menu.result && CITIES[menu.result.mode];
         if (city) {
           removeEventListener('resize', resize);

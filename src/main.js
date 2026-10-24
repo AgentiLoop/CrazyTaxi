@@ -7,7 +7,7 @@
 import * as THREE from 'three';
 import { KIND_NAMES } from './collision.js';
 import { DreamcastCar, STEP, WHEEL_RADIUS, CRAZY_BOX, carFiles, courseModeOf } from './dc-car.js';
-import { Input } from './input.js';
+import { Input, padBits } from './input.js';
 import { CITIES } from './start.js';
 import { loadGltf, releaseGltf, packBatched, makeUnlit, GameCamera, packView, pixelRatio } from './scene.js';
 import { batchStatic } from './static-batch.js';
@@ -259,6 +259,7 @@ async function main() {
     last = now;
     acc += dt;
     const state = input.poll();
+    if (padBits()) audio.start();   // a pad press starts the sound as a key does
     if (state.pausePressed) {
       paused = !paused;
       pauseLabel.style.display = paused ? 'grid' : 'none';
@@ -269,7 +270,7 @@ async function main() {
     let steps = 0;
     events.length = 0;
     while (acc >= STEP && steps < 6) {
-      if (ending) car.windowFrame(pad);
+      if (ending) car.windowFrame(pad | padBits());
       else car.update(state);
       events.push(...car.events);
       state.drivePressed = state.reversePressed = false;

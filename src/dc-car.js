@@ -723,7 +723,7 @@ export class DreamcastCar {
     // 23.7 degrees at full stick, the 0x1100 clamp never reached) does the rest.
     const want = Math.max(-1, Math.min(1, input.steer));
     const d = want - this.stickX, step = STEER_RATE * STEP;
-    this.stickX += Math.abs(d) <= step ? d : Math.sign(d) * step;
+    this.stickX += Math.abs(d) <= step || input.analog ? d : Math.sign(d) * step;   // a pad's stick is already analog
     cpu.wf(G.stick, this.stickX);
     cpu.wf(G.accel, input.accel);
     cpu.wf(G.brake, input.brake);
