@@ -24,6 +24,7 @@ import { MenuView } from './menu-view.js';
 import { loadSave, storeSave, PAD } from './dc-menu.js';
 import { BoxObjects } from './box-objects.js';
 import { createTAA } from './taa.js';
+import { Minimap, MINIMAP_CSS } from './minimap.js';
 
 // The asset folder: local-assets/, or the asset release's (VITE_ASSETS=... at build or dev time).
 const ASSETS = (import.meta.env && import.meta.env.VITE_ASSETS) || 'local-assets/';
@@ -180,7 +181,7 @@ async function main() {
   const marks = new KyakuMarks(scene, ASSETS);    // the pick-up circles, the dollar markers, the destination's wall
   const boxObjects = CRAZY ? new BoxObjects(scene, ASSETS, COURSE_MODE) : null;   // the Crazy Box games' own models (the balloons)
   const style = document.createElement('style');
-  style.textContent = HUD_CSS;
+  style.textContent = HUD_CSS + MINIMAP_CSS;
   // The Crazy Box draws its own overlay (below): no money board (Put_Pass_Time is skipped there)
   // or countdown text of the HUD's, and no clock in Crazy Jump (game 0), whose time never
   // runs (it draws its own distance); the others' time runs out in a fault (reason 1) and
@@ -188,6 +189,8 @@ async function main() {
   if (CRAZY) style.textContent += `#hud-board, #hud-big${MINI_GAME === 0 ? ', #hud-time' : ''} { display: none !important; }`;
   document.head.append(style);
   const hud = new Hud(hudRoot, ASSETS, digits);
+  // The city map (src/minimap.js): the Arcade and Original cities, not the Crazy Box.
+  const minimap = CRAZY ? null : new Minimap(hudRoot, await fetchJson(`courses/${['arcade', 'original'][COURSE_MODE]}.json`));
 
   function restart() {
     car.init();           // gameState0: the game's own start - the countdown begins
@@ -324,7 +327,9 @@ async function main() {
     gameCamera.apply(car.camera());   // camUpdate's view: the traffic was culled with it
     marks.update(car, customers, camera, renderer);
     // The Crazy Box: only while the game draws its own (some games carry fares without it).
-    navArrow.update(camera, d.pos, gs.aboard && rider && rider.phase === 2 && (!CRAZY || car.navDrawn) ? stops[rider.stop].centre : null);
+    const dest = gs.aboard && rider && rider.phase === 2 ? stops[rider.stop].centre : null;
+    navArrow.update(camera, d.pos, dest && (!CRAZY || car.navDrawn) ? dest : null);
+    if (minimap) minimap.update(d.pos, d.heading, dest);
     if (taa) taa.render(scene, camera); else renderer.render(scene, camera);
     if (boxView) {
       // The game's 640 x 480 screen is the 4:3 middle of the window (the vertical view is the game's).
