@@ -15,3 +15,6 @@ __pycache__/
 asset-release/
 mac/.build/
 mac/build/
+release/
+windows/build/
+linux/build/

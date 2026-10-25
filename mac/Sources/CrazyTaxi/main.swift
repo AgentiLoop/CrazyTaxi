@@ -21,6 +21,7 @@ import Darwin
 
 let SCHEME = "crazytaxi"
 let ORIGIN = "\(SCHEME)://app/"
+let WEB_URL = "https://ct.gokart.games/"   // the hosted game (deploy/publish.sh)
 
 // MARK: - Where the game is
 
@@ -204,6 +205,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
     var window: NSWindow!
     var webView: WKWebView!
     var root: URL!
+    var local = false
     var probeSeconds = 0
     var query = ""
     var samples: [[String: Any]] = []
@@ -218,14 +220,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
             let p = args[i + 1].split(separator: "x").compactMap { Double($0) }
             if p.count == 2 { size = NSSize(width: p[0], height: p[1]) }
         }
-        guard let root = Root.find(arguments: args) ?? (probeSeconds > 0 ? nil : Root.ask()) else {
-            FileHandle.standardError.write(Data("CrazyTaxi: no folder with dist/index.html and local-assets/ (use --root or $CRAZYTAXI_ROOT; npm run build first)\n".utf8))
-            exit(2)
-        }
-        self.root = root
-
+        // By default the app is a window around the hosted game (WEB_URL); --local or --root
+        // (and the probe) play the local build from dist/ and local-assets/ instead.
+        local = probeSeconds > 0 || args.contains("--local") || args.contains("--root")
         let config = WKWebViewConfiguration()
-        config.setURLSchemeHandler(AssetSchemeHandler(root: root), forURLScheme: SCHEME)
+        if local {
+            guard let root = Root.find(arguments: args) ?? (probeSeconds > 0 ? nil : Root.ask()) else {
+                FileHandle.standardError.write(Data("CrazyTaxi: no folder with dist/index.html and local-assets/ (use --root or $CRAZYTAXI_ROOT; npm run build first)\n".utf8))
+                exit(2)
+            }
+            self.root = root
+            config.setURLSchemeHandler(AssetSchemeHandler(root: root), forURLScheme: SCHEME)
+        }
         config.mediaTypesRequiringUserActionForPlayback = []
         config.preferences.setValue(true, forKey: "developerExtrasEnabled")
         if probeSeconds > 0 {
@@ -262,7 +268,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
     }
 
     func load() {
-        var s = ORIGIN
+        var s = local ? ORIGIN : WEB_URL
         if !query.isEmpty { s += "?" + query }
         webView.load(URLRequest(url: URL(string: s)!))
     }
