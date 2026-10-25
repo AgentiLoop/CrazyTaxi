@@ -129,6 +129,7 @@ export class MenuView {
       for (const t of bank.textures) if (t.png) this.paths.set(t.texture_number, t.png);
     }
     this.images = new Map();     // texture number -> HTMLImageElement (loading or loaded)
+    this.rename = new Map();     // a picture's text -> the text drawn instead (the mod's SPIDEY)
     this.hires = new Map();      // texture number -> the pack's ImageBitmap (?hires=1)
     this.tinted = new Map();     // 'texture:r,g,b' -> canvas
     this.logo = new Image();
@@ -330,7 +331,8 @@ export class MenuView {
       }
       const picture = PICTURES.get(run.map((e) => e.texture).join(','));
       if (!picture) return 0;
-      const [text, style] = picture;
+      const [name, style] = picture;
+      const text = this.rename.get(name) ?? name;   // the mod: AXEL's card reads SPIDEY while he is in (src/boot.js)
       const box = this.inkBox(run, style.ink);
       if (!box) return 0;
       if (d.alpha > 0) this.text(text, style, box, colour(style.fill), d.alpha);

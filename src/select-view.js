@@ -12,6 +12,7 @@
 // V motions are (VSklPlay): the clip's key f mod (frames - 1) at 30 keys a second.
 import * as THREE from 'three';
 import { loadGltf, makeUnlit } from './scene.js';
+import { spideySkin } from './spidey.js';
 
 const KEYS_PER_SECOND = 30;
 
@@ -26,7 +27,8 @@ export class SelectView {
     this.camera = new THREE.PerspectiveCamera();
     this.camera.matrixAutoUpdate = false;
     this.clips = null;                 // motion address -> { clip, frames }
-    this.figures = new Map();          // character -> { group, mixer, actions } (null while loading)
+    this.figures = new Map();          // character (or 'spidey:' character) -> { group, mixer, actions } (null while loading)
+    this.spidey = false;               // the mod: the figure drawn as Spidey (src/spidey.js; the select's Axel is its own character)
     this.ready = Promise.all([
       fetch(`${assets}characters/manifest.json`).then((r) => r.json()),
       loadGltf(`${assets}characters/motions.glb`),
@@ -40,19 +42,25 @@ export class SelectView {
     });
   }
 
+  /** Spidey in (true: the figures are drawn in his suit) or out. */
+  setSpidey(on) {
+    this.spidey = on;
+  }
+
   figure(character) {
-    if (!this.figures.has(character)) {
-      this.figures.set(character, null);
+    const spidey = this.spidey, key = spidey ? `spidey:${character}` : character;
+    if (!this.figures.has(key)) {
+      this.figures.set(key, null);
       loadGltf(`${this.assets}characters/characters/char_${character.toString(16).padStart(2, '0')}.glb`).then((g) => {
-        const body = makeUnlit(g.scene);
+        const body = spidey ? spideySkin(makeUnlit(g.scene)) : makeUnlit(g.scene);
         const group = new THREE.Group();
         group.matrixAutoUpdate = false;
         group.add(body);
         this.scene.add(group);
-        this.figures.set(character, { group, mixer: new THREE.AnimationMixer(body), actions: new Map() });
+        this.figures.set(key, { group, mixer: new THREE.AnimationMixer(body), actions: new Map() });
       });
     }
-    return this.figures.get(character);
+    return this.figures.get(key);
   }
 
   pose(fig, motion, frame) {

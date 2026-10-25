@@ -19,6 +19,7 @@
 // (The pick-up circle, the dollar marker and the destination: src/kyaku-marks.js.)
 import * as THREE from 'three';
 import { loadGltf, makeUnlit } from './scene.js';
+import { spideySkin, SPIDEY_CHARACTER } from './spidey.js';
 
 const FRAME_RATE = 30;
 const TURN = 0x10000;
@@ -127,6 +128,16 @@ export class PeopleView {
     this.clips = new Map();         // motion address -> { clip, frames }
     this.bind = null; this.lengths = null;
     this.drawn = 0;
+    this.spidey = false;            // the mod: Axel's figure drawn as Spidey (src/spidey.js)
+  }
+
+  /** Spidey in (true) or out: Axel's figure is loaded again, suited or not. */
+  setSpidey(on) {
+    if (on === this.spidey) return;
+    this.spidey = on;
+    for (const inst of this.pool.get(SPIDEY_CHARACTER) || []) this.scene.remove(inst.group);
+    this.pool.delete(SPIDEY_CHARACTER);
+    this.models.delete(SPIDEY_CHARACTER);
   }
 
   /** The motion clips and the Fcv skeleton constants (characters/ and fcv_motions/ manifests). */
@@ -153,7 +164,7 @@ export class PeopleView {
     if (!this.models.has(ch)) {
       // File names are the character index in hex (char_2a.glb).
       const p = loadGltf(`${this.assets}characters/characters/char_${ch.toString(16).padStart(2, '0')}.glb`)
-        .then((g) => makeUnlit(g.scene));
+        .then((g) => (ch === SPIDEY_CHARACTER && this.spidey ? spideySkin(makeUnlit(g.scene)) : makeUnlit(g.scene)));
       this.models.set(ch, p);
     }
     return this.models.get(ch);

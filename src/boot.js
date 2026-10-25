@@ -7,12 +7,14 @@
 // A (choose), X / Escape / Backspace = B (back), Q = Start. On the title, which only
 // takes START on the Dreamcast, the A keys press START too.
 // An Xbox pad: D-pad / left stick, A, B, X, Y and Menu (≡) = Start (src/input.js padBits).
+// Y (the key) puts the mod's 5th driver, Spidey, in Axel's place (src/spidey.js).
 import { DreamcastMenu, PAD, MODES, loadSave } from './dc-menu.js';
 import { padBits } from './input.js';
 import { MenuView, FONTS } from './menu-view.js';
 import { SelectView } from './select-view.js';
 import { letterbox } from './scene.js';
 import { GameAudio } from './audio.js';
+import { SPIDEY_CAB } from './spidey.js';
 // The menu's web fonts (src/menu-view.js draws its text with them).
 import '@fontsource/anton/400.css';
 import '@fontsource/archivo-black/400.css';
@@ -40,7 +42,7 @@ async function fetchOk(path) {
 }
 
 /** Run the menu until a city is chosen; resolves with the menu's result. box: open on the Crazy Box's box screen with that game's box chosen and cab as the CABBIE. */
-async function runMenu(box, cab) {
+async function runMenu(box, cab, spidey = false) {
   status.textContent = 'Loading the menu...';
   // The menus' sound (src/audio.js): the menu loop, the driver select's song, the cursor
   // and decide sounds and the voice, as the menu code requests them.
@@ -77,10 +79,15 @@ async function runMenu(box, cab) {
   let held = 0;
   const down = (e) => { if (KEYS[e.code]) { e.preventDefault(); held |= KEYS[e.code]; } };
   const up = (e) => { if (KEYS[e.code]) held &= ~KEYS[e.code]; };
+  // The mod: Y puts Spidey in Axel's place on the driver select (or takes him out again);
+  // deciding on that card starts the city with Spidey driving Axel's cab (?driver=spidey).
+  const toggleSpidey = (e) => { if (e.code === 'KeyY' && !e.repeat) spidey = !spidey; };
+  addEventListener('keydown', toggleSpidey);
   addEventListener('keydown', down);
   addEventListener('keyup', up);
   addEventListener('blur', () => { held = 0; });
   window.__menu = menu;   // for tests and probes
+  window.__select = select;
 
   return new Promise((resolve) => {
     let last = performance.now(), acc = 0;
@@ -96,11 +103,12 @@ async function runMenu(box, cab) {
         if (city) {
           removeEventListener('resize', resize);
           removeEventListener('keydown', down);
+          removeEventListener('keydown', toggleSpidey);
           removeEventListener('keyup', up);
           for (const ev of ['keydown', 'pointerdown']) removeEventListener(ev, startAudio);
           if (audio.ctx) audio.ctx.close();   // the city's own audio (src/main.js) takes over
           canvas.remove();
-          resolve({ city, ...menu.result });
+          resolve({ city, ...menu.result, spidey: spidey && menu.result.cab === SPIDEY_CAB });
           return;
         }
         // EXIT (back to the title) is handled inside the game's code; anything else
@@ -108,6 +116,9 @@ async function runMenu(box, cab) {
         if (menu.result) console.warn(`menu: ${MODES[menu.result.mode]} is not playable`);
         menu.init();
       }
+      const suited = spidey && menu.screen === 'select' && menu.select().cab === SPIDEY_CAB;
+      select.setSpidey(suited);
+      if (suited) view.rename.set('AXEL', 'SPIDEY'); else view.rename.delete('AXEL');
       view.render(menu.draws, menu.screen === 'select' ? {
         background: menu.select().background,
         scene: select.render(menu.draws, menu.view(), menu.projection(), canvas.width, canvas.height),
@@ -123,9 +134,9 @@ async function boot() {
   if (!params.has('city')) {
     // ?menu=crazybox&game=N&cab=C: a Crazy Box game ended (NO in its TRY AGAIN window, or a clear) - back to the box screen.
     const box = params.get('menu') === 'crazybox' ? Math.min(15, Math.max(0, parseInt(params.get('game'), 10) || 0)) : undefined;
-    const choice = await runMenu(box, parseInt(params.get('cab'), 10) || 0);
+    const choice = await runMenu(box, parseInt(params.get('cab'), 10) || 0, params.get('driver') === 'spidey');
     const extra = choice.city === 'crazybox' ? `game=${choice.game}` : `rules=${choice.item}`;
-    history.replaceState(null, '', `?city=${choice.city}&cab=${choice.cab}&${extra}`);
+    history.replaceState(null, '', `?city=${choice.city}&cab=${choice.cab}&${extra}${choice.spidey ? '&driver=spidey' : ''}`);
     status.style.display = '';
   }
   await import('./main.js');
