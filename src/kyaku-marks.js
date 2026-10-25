@@ -73,6 +73,38 @@ export function readModel(cpu, address) {
   return records;
 }
 
+/**
+ * The marker's ring is an octagon about z. Round it: each triangle is cut into n * n in
+ * (angle, radius, z) about the axis and put back, so its straight edges become arcs
+ * through the octagon's corners (n = 4: a 32-sided ring). UVs interpolate as before.
+ */
+export function roundRing(positions, uvs, n = 4) {
+  const P = [], U = [];
+  for (let t = 0; t < positions.length; t += 9) {
+    const v = [0, 1, 2].map((i) => {
+      const [x, y, z] = positions.slice(t + 3 * i, t + 3 * i + 3);
+      return [Math.atan2(y, x), Math.hypot(x, y), z, uvs[(t / 3 + i) * 2], uvs[(t / 3 + i) * 2 + 1]];
+    });
+    for (const w of v) {   // the same side of the -x axis as the first corner; the axis itself takes any angle
+      if (w[1] < 1e-6) continue;
+      while (w[0] - v[0][0] > Math.PI) w[0] -= 2 * Math.PI;
+      while (v[0][0] - w[0] > Math.PI) w[0] += 2 * Math.PI;
+    }
+    const at = (i, j) => {   // barycentric (i, j, n - i - j) / n
+      const a = i / n, b = j / n, c = 1 - a - b;
+      return v[0].map((_, k) => a * v[0][k] + b * v[1][k] + c * v[2][k]);
+    };
+    const put = (p) => { P.push(p[1] * Math.cos(p[0]), p[1] * Math.sin(p[0]), p[2]); U.push(p[3], p[4]); };
+    for (let i = 0; i < n; i++) {
+      for (let j = 0; i + j < n; j++) {
+        [at(i + 1, j), at(i, j + 1), at(i, j)].forEach(put);
+        if (i + j + 2 <= n) [at(i + 1, j), at(i + 1, j + 1), at(i, j + 1)].forEach(put);
+      }
+    }
+  }
+  return { positions: P, uvs: U };
+}
+
 export class KyakuMarks {
   constructor(scene, assets) {
     this.scene = scene;
@@ -122,7 +154,8 @@ export class KyakuMarks {
   meshes(cpu) {
     const build = (address, material) => {
       const group = new THREE.Group();
-      for (const r of readModel(cpu, address)) {
+      for (let r of readModel(cpu, address)) {
+        if (address !== DOLLAR) r = { ...r, ...roundRing(r.positions, r.uvs) };
         const g = new THREE.BufferGeometry();
         g.setAttribute('position', new THREE.Float32BufferAttribute(r.positions, 3));
         g.setAttribute('uv', new THREE.Float32BufferAttribute(r.uvs, 2));
