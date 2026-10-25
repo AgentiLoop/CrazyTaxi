@@ -11,6 +11,7 @@ import { Input, padBits } from './input.js';
 import { CITIES } from './start.js';
 import { loadGltf, releaseGltf, packBatched, makeUnlit, GameCamera, packView, pixelRatio } from './scene.js';
 import { batchStatic } from './static-batch.js';
+import { pullOverlays } from './overlays.js';
 import { PeopleView } from './people.js';
 import { Hud, HUD_CSS } from './hud.js';
 import { CartoonDigits } from './cartoon-digits.js';
@@ -117,6 +118,8 @@ async function main() {
   ]);
   scene.add(makeUnlit(cityGltf.scene));
   scene.add(makeUnlit(propsGltf.scene));
+  pullOverlays(cityGltf.scene);   // the details laid flat on another face (shadows on the pavement)
+  pullOverlays(propsGltf.scene);
 
   const cabModel = makeUnlit(cabGltf.scene);
   const wheelMeshes = [];
