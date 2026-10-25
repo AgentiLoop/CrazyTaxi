@@ -18,6 +18,7 @@
 // by the law of cosines) and the hand or foot angles ([9], [11], [14], [16]).
 // (The pick-up circle, the dollar marker and the destination: src/kyaku-marks.js.)
 import * as THREE from 'three';
+import { clone as cloneSkinned } from 'three/addons/utils/SkeletonUtils.js';
 import { loadGltf, makeUnlit } from './scene.js';
 import { spideySkin, SPIDEY_CHARACTER } from './spidey.js';
 
@@ -164,7 +165,7 @@ export class PeopleView {
     if (!this.models.has(ch)) {
       // File names are the character index in hex (char_2a.glb).
       const p = loadGltf(`${this.assets}characters/characters/char_${ch.toString(16).padStart(2, '0')}.glb`)
-        .then((g) => (ch === SPIDEY_CHARACTER && this.spidey ? spideySkin(makeUnlit(g.scene)) : makeUnlit(g.scene)));
+        .then((g) => (ch === SPIDEY_CHARACTER && this.spidey ? spideySkin(makeUnlit(g.scene), this.assets) : makeUnlit(g.scene)));
       this.models.set(ch, p);
     }
     return this.models.get(ch);
@@ -179,7 +180,7 @@ export class PeopleView {
       this.scene.add(inst.group);
       list.push(inst);
       this.character(ch).then((model) => {
-        inst.body = model.clone();
+        inst.body = cloneSkinned(model);   // Spidey's skinned body bound to the copy's own bones
         inst.bones = new Map();
         inst.body.traverse((o) => { if (o.name.startsWith('bone_')) inst.bones.set(+o.name.slice(5), o); });
         inst.mixer = new THREE.AnimationMixer(inst.body);

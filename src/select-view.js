@@ -51,8 +51,8 @@ export class SelectView {
     const spidey = this.spidey, key = spidey ? `spidey:${character}` : character;
     if (!this.figures.has(key)) {
       this.figures.set(key, null);
-      loadGltf(`${this.assets}characters/characters/char_${character.toString(16).padStart(2, '0')}.glb`).then((g) => {
-        const body = spidey ? spideySkin(makeUnlit(g.scene)) : makeUnlit(g.scene);
+      loadGltf(`${this.assets}characters/characters/char_${character.toString(16).padStart(2, '0')}.glb`)
+        .then((g) => (spidey ? spideySkin(makeUnlit(g.scene), this.assets) : makeUnlit(g.scene))).then((body) => {
         const group = new THREE.Group();
         group.matrixAutoUpdate = false;
         group.add(body);
