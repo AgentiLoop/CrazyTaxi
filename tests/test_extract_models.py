@@ -42,8 +42,8 @@ def model(records, radius=10.0):
 
 
 def quad_model():
-    # A 4-vertex strip facing +z, written in strip order.
-    return model([record([strip(0x12, 4, [vertex(0, 0, 0, uv=(0, 1)), vertex(1, 0, 0, uv=(1, 1)),
+    # A 4-vertex strip facing +z: written counter-clockwise, cull mode 3 (the strip order's side shows).
+    return model([record([strip(0x13, 4, [vertex(0, 0, 0, uv=(0, 1)), vertex(1, 0, 0, uv=(1, 1)),
                                          vertex(0, 1, 0, uv=(0, 0)), vertex(1, 1, 0, uv=(1, 0))])])])
 
 
@@ -76,12 +76,20 @@ class ModelTests(unittest.TestCase):
         self.assertEqual(len(parsed["records"]), 1)
         self.assertEqual(len(parsed["vertices"]), 4)
         self.assertEqual(parsed["end"], len(data) - 4)
-        tris = [em.facing(t, parsed["vertices"]) for t in em.triangles(parsed["records"][0]["strips"][0])]
+        strip = parsed["records"][0]["strips"][0]
+        tris = [em.facing(t, parsed["vertices"], strip["gflag"]) for t in em.triangles(strip)]
         self.assertEqual(len(tris), 2)
         for tri in tris:
             a, b, c = (parsed["vertices"][k] for k in tri)
             cross_z = (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])
             self.assertGreater(cross_z, 0)
+
+    def test_facing_follows_the_cull_mode_not_the_normals(self):
+        # Normals +z on a triangle written counter-clockwise from +z.
+        v = [(0, 0, 0, 0, 0, 1), (1, 0, 0, 0, 0, 1), (0, 1, 0, 0, 0, 1)]
+        self.assertEqual(em.facing((0, 1, 2), v, 0x12), (0, 2, 1), "cull mode 2: the side opposite the strip order")
+        self.assertEqual(em.facing((0, 2, 1), v, 0x13), (0, 2, 1), "cull mode 3: the strip order's side, whatever the normals")
+        self.assertEqual(em.facing((0, 2, 1), v, 0x11), (0, 1, 2), "no culling: wound by the normals")
 
     def test_triangle_list_and_references_share_vertices(self):
         data, _ = list_with_reference()

@@ -384,10 +384,10 @@ function cutByAlpha(img, original) {
   return canvas.transferToImageBitmap();
 }
 
-/** The URL of the pack's image (upright) for an extracted picture, or null. */
-export async function hiresLink(png) {
-  const t = HIRES ? (await packManifest()).get(png) : null;
-  return t ? PACK + packSource(t, HIRES)[0] : null;
+/** The URL of the pack's image (upright) for an extracted picture, or null (cap: the size cap, 0 = no pack). */
+export async function hiresLink(png, cap = HIRES) {
+  const t = cap ? (await packManifest()).get(png) : null;
+  return t ? PACK + packSource(t, cap)[0] : null;
 }
 
 /**

@@ -38,9 +38,9 @@ export class NavArrow {
       this.mesh.add(gltf.scene);
     });
 
-    const light = new THREE.DirectionalLight(0xffffff, 2.2);
+    const light = new THREE.DirectionalLight(0xffffff, 1.85);
     light.position.set(0.567, 0.741, 0.359);
-    scene.add(light, new THREE.AmbientLight(0xffffff, 0.9));
+    scene.add(light, new THREE.AmbientLight(0xffffff, 0.625));
     this._dir = new THREE.Vector3();
     this._q = new THREE.Quaternion();
     this._inv = new THREE.Quaternion();

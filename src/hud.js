@@ -42,29 +42,28 @@ export class Hud {
       .map((k) => [k, root.querySelector(`#hud-${k}`)]));
     this.cardTimer = 0;
     this.goTimer = 0;
-    // The D / R gear box (Put_GearBox: SPRCOMM sprites 17 and 18 centred at 582, 420), the
-    // pack's picture while the pack is on (?hires=1 or H; the extracted PNGs are upside down: CSS flips them).
+    // The D / R gear box (Put_GearBox: SPRCOMM sprites 17 and 18 centred at 582, 420): always the
+    // pack's picture, like the board's headers, the game's PNGs until it loads or if it has none
+    // (the extracted PNGs are upside down: CSS flips them).
     this.gearSrc = GEAR_SPRITES.map((png) => releaseImage(assets + png));
     this.gear = -1;
+    Promise.all(GEAR_SPRITES.map((png) => hiresLink(png, 512))).then((urls) => {
+      if (!urls.every(Boolean)) return;
+      this.gearSrc = urls;
+      this.el.gear.classList.add('pack');
+      this.gear = -1;
+    });
     this.landmarkPng = null;
     this.hiresShown = 0;
     if (HIRES) this.showHires();
   }
 
-  /** The gear box and the destination picture from the pack (HIRES on) or the game's PNGs. */
+  /** The destination picture from the pack (HIRES on) or the game's PNGs. */
   showHires() {
     this.hiresShown = HIRES;
-    this.gearSrc = GEAR_SPRITES.map((png) => releaseImage(this.assets + png));
-    this.el.gear.classList.remove('pack');
-    this.gear = -1;
-    Promise.all(GEAR_SPRITES.map(hiresLink)).then((urls) => {
-      if (!urls.every(Boolean) || !HIRES) return;
-      this.gearSrc = urls;
-      this.el.gear.classList.add('pack');
-      this.gear = -1;
-    });
     if (this.landmarkPng) this.showLandmark(this.landmarkPng);
   }
+
 
   showLandmark(png) {
     const img = this.el.landmark;
@@ -190,7 +189,7 @@ export const HUD_CSS = DIGITS_CSS + `
 #hud-bar { position: absolute; left: 2.5cqh; top: 10.83cqh; width: 27cqh; height: 1.67cqh; background: rgba(0,0,0,.5); border: 0.2cqh solid #fff; border-radius: 0.4cqh; }
 #hud-bar-fill { height: 100%; width: 100%; }
 #hud-bar-fill.green { background: #30e030; } #hud-bar-fill.yellow { background: #f0d020; } #hud-bar-fill.red { background: #f03030; }
-#hud-dest { position: absolute; right: 1.67cqh; top: 33%; width: 16.67cqh; text-align: center; font-size: 1.56cqh; }
+#hud-dest { position: absolute; left: 2.5cqh; top: 17%; width: 16.67cqh; text-align: center; font-size: 1.56cqh; }
 #hud-landmark { width: 13.33cqh; height: 13.33cqh; image-rendering: pixelated; border: 0.2cqh solid #fff; background: #000; }
 #hud-landmark.pack { image-rendering: auto; transform: scaleY(-1); }  /* the extracted landmark PNGs are upright (sky on top), the pack's are stored upside down */
 /* The gear box: a 64 x 64 sprite centred at (582, 420) of 640 x 480. */

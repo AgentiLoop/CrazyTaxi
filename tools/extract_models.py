@@ -202,8 +202,17 @@ def triangles(strip):
     return [t for t in tris if len(set(t)) == 3]
 
 
-def facing(tri, vertices):
-    """Order a triangle counter-clockwise relative to its stored vertex normals."""
+def facing(tri, vertices, gflag=0):
+    """Order a triangle counter-clockwise on the side the PowerVR draws.
+
+    gflag bits 0-1 are the strip's cull mode: 2 shows the side opposite the strip order, 3 the
+    strip order's side (99.6% of the city's and models' triangles also face their stored normals
+    that way; the rest have normals pointing the wrong way and were culled when wound by them).
+    Strips without culling (0, 1) are wound by their normals."""
+    if gflag & 3 == 2:
+        return (tri[0], tri[2], tri[1])
+    if gflag & 3 == 3:
+        return tri
     a, b, c = (vertices[k] for k in tri)
     e1 = [b[n] - a[n] for n in range(3)]
     e2 = [c[n] - a[n] for n in range(3)]
@@ -226,7 +235,7 @@ def material_key(record, textures):
         colour = (1.0, 1.0, 1.0, colour[3])
     polygon_list = pcw >> 24 & 7
     mode = "BLEND" if polygon_list in (1, 2, 3) else "MASK" if polygon_list == 4 else "OPAQUE"
-    double = any(s["gflag"] & 3 == 0 for s in record["strips"])
+    double = any(s["gflag"] & 3 in (0, 1) for s in record["strips"])
     return (texture, colour, mode, double, tsp >> 18 & 1, tsp >> 17 & 1, tsp >> 16 & 1, tsp >> 15 & 1,
             tsp >> 13 & 3, record["specular"] == -3)
 
@@ -453,7 +462,7 @@ class Gltf(object):
             key = self.material_key(record)
             tris = groups.setdefault(key, [])
             for strip in record["strips"]:
-                tris.extend(facing(t, model["vertices"]) for t in triangles(strip))
+                tris.extend(facing(t, model["vertices"], strip["gflag"]) for t in triangles(strip))
         primitives, total = [], 0
         for key, tris in groups.items():
             if not tris:
