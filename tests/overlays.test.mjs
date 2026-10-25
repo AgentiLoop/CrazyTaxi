@@ -26,14 +26,43 @@ test('pullOverlays: a shadow inside the pavement moves to a pulled child, the pa
   assert.equal(child.material.map, shadow.map);
 });
 
-test('pullOverlays: faces above the plane, over the edge or of the same material stay', () => {
+test('pullOverlays: faces above the plane, meeting at an edge, facing away or see-through stay', () => {
   const a = new THREE.MeshBasicMaterial(), b = new THREE.MeshBasicMaterial();
   const root = new THREE.Group();
   root.add(square(0, 0, 100, 0, a));
   root.add(square(0, 0, 8, 2, b));       // 2 above: the depth buffer keeps them apart
-  root.add(square(49, 0, 8, 0, b));      // half off the edge
-  root.add(square(-20, 0, 8, 0, a));     // the same material
+  root.add(square(54, 0, 8, 0, b));      // beside the edge, sharing it
+  const under = square(-20, 0, 8, 0, b);
+  under.geometry.rotateX(Math.PI).translate(0, 0, -40);   // facing down
+  root.add(under);
   const glass = new THREE.MeshBasicMaterial({ transparent: true });
   root.add(square(20, 0, 8, 0, glass));  // see-through: pulled already (scene.js toUnlit)
   assert.equal(pullOverlays(root), 0);
+});
+
+test('pullOverlays: a shadow cut into the pavement overlapping it by a sliver, a detail half off its edge', () => {
+  const a = new THREE.MeshBasicMaterial(), b = new THREE.MeshBasicMaterial();
+  const root = new THREE.Group();
+  const pavement = square(-50, 0, 100, 0, a);   // x -100..0
+  const shadow = square(9.8, 0, 20, 0, b);      // x -0.2..19.8: a sliver 0.2 wide on the pavement
+  const half = square(0, 30, 8, 0, b);          // x -4..4
+  root.add(pavement, shadow, half);
+  pullOverlays(root);
+  assert.equal(pavement.children.length, 0);
+  assert.equal(shadow.children.length, 1);
+  assert.equal(half.children.length, 1);
+  assert.equal(half.geometry.index.count, 0);
+});
+
+test('pullOverlays: a detail on a detail is pulled one layer further', () => {
+  const a = new THREE.MeshBasicMaterial(), b = new THREE.MeshBasicMaterial(), c = new THREE.MeshBasicMaterial();
+  const root = new THREE.Group();
+  const ground = square(0, 0, 100, 0, a), mid = square(0, 0, 20, 0, b), top = square(0, 0, 4, 0, c), same = square(30, 0, 8, 0, a);
+  root.add(ground, mid, top, same);
+  assert.equal(pullOverlays(root), 6);
+  assert.equal(mid.children[0].material.polygonOffsetFactor, -1);
+  assert.equal(top.children[0].material.polygonOffsetFactor, -2);
+  assert.equal(top.children[0].material.userData.pull, 2);
+  assert.equal(top.children[0].name.endsWith('#overlay2'), true);
+  assert.equal(same.children.length, 1);   // the same material on itself: pulled as well
 });

@@ -141,7 +141,8 @@ export function atlasMaterial(sample, atlas) {
   });
   m.name = `atlas ${drawKey(sample)}`;
   const decal = sample.userData.decal === true;
-  if (decal) pullDecal(m);
+  const layer = sample.userData.pull || 1;
+  if (decal) pullDecal(m, layer);
   if (atlas) {
     const layout = atlas.userData.layoutSize || atlas.image.width;
     m.userData.atlasScale = { value: atlas.image.width / layout };
@@ -150,9 +151,9 @@ export function atlasMaterial(sample, atlas) {
       shader.uniforms.atlasScale = m.userData.atlasScale;
       shader.vertexShader = ATLAS_VERTEX + shader.vertexShader.replace('#include <uv_vertex>', '#include <uv_vertex>\n  vTile = tile;\n  vWrap = wrap;');
       shader.fragmentShader = ATLAS_FRAGMENT + shader.fragmentShader.replace('#include <map_fragment>', ATLAS_MAP);
-      if (decal) shader.vertexShader = shader.vertexShader.replace('#include <project_vertex>', DECAL_PROJECT);
+      if (decal) shader.vertexShader = shader.vertexShader.replace('#include <project_vertex>', decalProject(layer));
     };
-    m.customProgramCacheKey = () => decal ? 'static-atlas-decal' : 'static-atlas';
+    m.customProgramCacheKey = () => decal ? `static-atlas-decal${layer}` : 'static-atlas';
   }
   return m;
 }
@@ -161,19 +162,21 @@ export function atlasMaterial(sample, atlas) {
 // hundred units that is under the depth buffer's step (near 3, it grows with distance squared)
 // and they flicker. Each vertex is moved toward the eye along its own ray by a fraction of its
 // distance: the same pixels, nearer in depth by DECAL_PULL x distance (2.5 depth steps at
-// 10 000, more nearer in).
+// 10 000, more nearer in). A detail laid on another detail (overlays.js) is pulled once more
+// per layer under it.
 export const DECAL_PULL = 5e-4;
-const DECAL_PROJECT = /* glsl */`#include <project_vertex>
-  mvPosition.xyz *= ${1 - DECAL_PULL};
+const decalProject = (layer) => /* glsl */`#include <project_vertex>
+  mvPosition.xyz *= ${1 - DECAL_PULL * layer};
   gl_Position = projectionMatrix * mvPosition;`;
 
-/** Marks a material as a see-through layer on a wall and pulls it toward the eye (DECAL_PULL). */
-export function pullDecal(m) {
+/** Marks a material as a see-through layer on a wall and pulls it toward the eye (DECAL_PULL x layer). */
+export function pullDecal(m, layer = 1) {
   m.userData.decal = true;
+  if (layer !== 1) m.userData.pull = layer;
   m.onBeforeCompile = (shader) => {
-    shader.vertexShader = shader.vertexShader.replace('#include <project_vertex>', DECAL_PROJECT);
+    shader.vertexShader = shader.vertexShader.replace('#include <project_vertex>', decalProject(layer));
   };
-  m.customProgramCacheKey = () => 'decal';
+  m.customProgramCacheKey = () => `decal${layer}`;
 }
 
 /**
