@@ -25,17 +25,19 @@ export function fitView(points, side) {
 }
 
 /** The roads as a graph: every point of the stage courses, joined along each course and from its
- *  end to the start of its next and branch courses and at both ends to its neighbour lane (both
- *  ways: the cab may drive against traffic). */
+ *  end to the start of its next and branch courses, at both ends to its neighbour lane, and to
+ *  every point of another lane within CROSS (both ways: the cab may drive against traffic). */
+const CROSS = 60;  // horizontal, with at most CROSS_DY of height: lanes meeting mid-lane at a junction
+const CROSS_DY = 15;
 export function roadGraph(courses) {
   const F = courses.course_fields;
   const [IDX, ROLE, NEXT, BRANCH, NEIGHBOUR, PTS] =
     ['index', 'role', 'next', 'branch', 'neighbour', 'points'].map((f) => F.indexOf(f));
   const stages = courses.courses.filter((c) => c[ROLE] === 'stage');
-  const pts = [], first = new Map(), last = new Map();
+  const pts = [], lane = [], first = new Map(), last = new Map();
   for (const c of stages) {
     first.set(c[IDX], pts.length);
-    for (const p of c[PTS]) pts.push(p);
+    for (const p of c[PTS]) { pts.push(p); lane.push(c[IDX]); }
     last.set(c[IDX], pts.length - 1);
   }
   const adj = pts.map(() => []);
@@ -59,6 +61,20 @@ export function roadGraph(courses) {
       join(a, best);
     }
   }
+  // Lanes that touch: a junction where a lane starts or ends in the middle of another, or a
+  // lane change anywhere. Without these the route runs to a lane's end and back.
+  const cell = new Map(), key = (x, z) => `${Math.floor(x / CROSS)},${Math.floor(z / CROSS)}`;
+  pts.forEach((p, i) => { const k = key(p[0], p[2]); cell.has(k) ? cell.get(k).push(i) : cell.set(k, [i]); });
+  pts.forEach((p, a) => {
+    const cx = Math.floor(p[0] / CROSS), cz = Math.floor(p[2] / CROSS);
+    for (let dx = -1; dx <= 1; dx++) for (let dz = -1; dz <= 1; dz++) {
+      for (const b of cell.get(`${cx + dx},${cz + dz}`) ?? []) {
+        const q = pts[b];
+        if (b > a && lane[b] !== lane[a] && Math.abs(q[1] - p[1]) <= CROSS_DY &&
+            (q[0] - p[0]) ** 2 + (q[2] - p[2]) ** 2 <= CROSS * CROSS) join(a, b);
+      }
+    }
+  });
   return { pts, adj };
 }
 
