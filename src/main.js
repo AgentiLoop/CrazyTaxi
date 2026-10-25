@@ -215,6 +215,9 @@ async function main() {
   }
 
   let acc = 0, last = performance.now(), frames = 0, fpsT = last, fps = 0;
+  // I (pad X) shows / hides the debug line and the help; hidden, neither is kept up.
+  let info = true;
+  const help = document.getElementById('help'), debugLine = document.getElementById('hud-debug');
   // P pauses: the game stops stepping, the sound is held and PAUSED is shown.
   let paused = false;
   const pauseLabel = document.createElement('div');
@@ -271,6 +274,11 @@ async function main() {
     acc += dt;
     const state = input.poll();
     if (padBits()) audio.start();   // a pad press starts the sound as a key does
+    if (state.infoPressed) {
+      info = !info;
+      help.hidden = debugLine.hidden = !info;
+      frames = 0; fpsT = now;
+    }
     if (state.pausePressed) {
       paused = !paused;
       pauseLabel.style.display = paused ? 'grid' : 'none';
@@ -338,9 +346,11 @@ async function main() {
       boxView.render(ending ? frozen.concat(car.sprites) : car.sprites, { clear: true });
     }
 
-    frames++;
-    if (now - fpsT > 500) { fps = Math.round(frames * 1000 / (now - fpsT)); frames = 0; fpsT = now; }
-    hud.update(gs, rider, stops, events, car, riderHead(rider),
+    if (info) {
+      frames++;
+      if (now - fpsT > 500) { fps = Math.round(frames * 1000 / (now - fpsT)); frames = 0; fpsT = now; }
+    }
+    hud.update(gs, rider, stops, events, car, riderHead(rider), info &&
       `${Math.round(car.kmh())} km/h  ${car.gear === 0 ? 'R' : 'D' + car.gear}  ${Math.round(car.rpm)} rpm  ${KIND_NAMES[car.groundKind] || '-'}  ` +
       `(${car.pos.x.toFixed(0)}, ${car.pos.y.toFixed(0)}, ${car.pos.z.toFixed(0)})  lv ${gs.level}  customers ${customers.length} (${people.drawn} people drawn)  ` +
       `traffic ${car.carCount} (${traffic.drawn} drawn, level ${car.trafficLevel})  cam ${car.camera().mode}  ${fps} fps`);

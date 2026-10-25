@@ -11,6 +11,7 @@ const MAP = {
   KeyZ: 'reverse',  // A button
   KeyR: 'reset',
   KeyP: 'pause',
+  KeyI: 'info',     // the debug line and the help (pad X)
 };
 
 // Xbox (W3C "standard" gamepad) buttons. The Dreamcast pad's A B X Y sit where the
@@ -87,6 +88,7 @@ export class Input {
     if (held(p, BTN.MENU)) now.add('pause');
     if (held(p, BTN.VIEW)) now.add('reset');
     if (held(p, BTN.Y)) now.add('hires');
+    if (held(p, BTN.X)) now.add('info');
     const pressed = new Set([...now].filter((k) => !this.padHeld.has(k)));
     this.padHeld = now;
     const dpad = (held(p, BTN.RIGHT) ? 1 : 0) - (held(p, BTN.LEFT) ? 1 : 0);
@@ -115,7 +117,7 @@ export class Input {
       brake: Math.max(d.has('brake') ? 1 : 0, pad?.brake ?? 0),
       drive: has('drive'), reverse: has('reverse'),
       drivePressed: hit('drive'), reversePressed: hit('reverse'),
-      resetPressed: hit('reset'), pausePressed: hit('pause'),
+      resetPressed: hit('reset'), pausePressed: hit('pause'), infoPressed: hit('info'),
     };
     p.clear();
     return state;

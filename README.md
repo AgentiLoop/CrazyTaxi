@@ -4,25 +4,66 @@ A three.js reconstruction of the Sega Dreamcast *Crazy Taxi* (USA, MK-51035),
 built from data extracted from the user's own disc. No game assets are in this
 repository.
 
-## Run
+## Play it locally
+
+**You need your own copy of the game.** No game data ships with this repo. Rip
+your own *Crazy Taxi* (USA, MK-51035) Dreamcast disc to a `.7z`, `.chd` or the raw
+`(Track 3).bin`, then pull the assets out of it.
+
+What you need: [Node.js](https://nodejs.org/), Python 3, and on a Mac, Xcode
+or the Command Line Tools if you want the app.
 
 ```sh
-python3 tools/extract_all.py '<Crazy Taxi (USA).7z or .chd>' --output local-assets   # once, ~2 min
+# 1. Pull the assets off your disc image (once, about 2 minutes)
+python3 tools/extract_all.py '<Crazy Taxi (USA).7z or .chd>' --output local-assets
+
+# 2. Install and play in the browser
 npm install
-npm run dev        # http://127.0.0.1:5173/  (add ?city=original for the Original city)
-npm test           # node --test tests/*.test.mjs (skips data tests without local-assets/)
+npm run dev        # open http://127.0.0.1:5173/  (add ?city=original for the Original city)
+
+# Optional: run the tests
+npm test
 ```
 
 ### The Mac app
 
-`mac/` is a macOS app (Swift, one `WKWebView`) that plays the built game without a
-browser or a dev server: it serves `dist/` and `local-assets/` from disk over its own
-URL scheme.
+`mac/` is a small macOS app that plays the game without a browser or a dev server.
 
 ```sh
-npm run build && mac/build.sh     # -> mac/build/CrazyTaxi.app (finds the repo folder by itself; --root PATH to point elsewhere)
-tools/mac-probe.sh 30             # unattended 60 fps check in the app: one JSON line a second, then a summary
+npm run build && mac/build.sh     # builds mac/build/CrazyTaxi.app
+open mac/build/CrazyTaxi.app
 ```
+
+## Controls
+
+Any Xbox-style (standard layout) controller works. Plug it in and press a button.
+
+**Driving**
+
+| Action | Keyboard | Controller |
+|---|---|---|
+| Steer | ← → or A / D | Left stick or D-pad |
+| Gas | ↑ or W | A or RT |
+| Brake | ↓, S or Space | B or LT |
+| Drive gear | X | RB or right stick forward |
+| Reverse gear | Z | LB or right stick back |
+| Pause | P | Menu (≡) |
+| Restart | R | View |
+| Hi-res textures on/off | H | Y |
+
+**Menus**
+
+| Action | Keyboard | Controller |
+|---|---|---|
+| Move | Arrows or WASD | D-pad or left stick |
+| Choose | Enter, Space or Z | A |
+| Back | Esc, Backspace or X | B |
+| Start | Q | Menu (≡) |
+
+**How to play:** stop beside a customer (inside their circle) to pick them up, then
+follow the arrow to the place in the picture and stop there to drop them off.
+
+## Under the hood
 
 The world (city and set objects) is merged into a few draw calls at load
 (`src/static-batch.js`: one texture atlas, one mesh per cell and way of drawing) -
@@ -32,13 +73,7 @@ or H in game) draws the same batches from atlases four times the size with the p
 pictures in the tiles (a 64 x 64 game texture is the pack at 256; 8192 x 8192, mipmapped).
 Edges are anti-aliased over time as well as by 4x MSAA (`src/taa.js`: jittered frames
 blended into a reprojected history), so the far city doesn't crawl; `?taa=0` is MSAA only.
-
-Keys: arrows / WASD drive and steer, X = Drive gear (B), Z = Reverse gear (A),
-R restart. Xbox controller (any standard-layout pad): left stick / D-pad steer, A (or RT)
-gas, B (or LT) brake, RB or right stick forward Drive gear, LB or right stick back Reverse gear, Menu (≡) pause,
-View restart, Y hi-res pack; in the menus D-pad / left stick, A choose, B back, Menu = Start.
-Stop beside a customer (inside their circle) to pick them up, stop at
-the landmark (the arrow and picture show where) to drop them off.
+`tools/mac-probe.sh 30` runs an unattended 60 fps check in the Mac app.
 
 ## What is in the game so far
 

@@ -148,7 +148,7 @@ export class Hud {
     } else {
       e.big.hidden = true;
     }
-    if (debugText !== undefined) e.debug.textContent = debugText;
+    if (debugText) e.debug.textContent = debugText;
   }
 }
 
