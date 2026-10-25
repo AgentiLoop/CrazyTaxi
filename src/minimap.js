@@ -2,7 +2,8 @@
 // goiToolCourseMap, is a developer tool). The roads are the run's traffic lanes (the "stage"
 // courses and the main line of courses/<city>.json, tools/extract_courses.py), seen from above
 // with north (-z) up; the cab is a yellow triangle along its heading, the destination of the
-// customer aboard a green dot. The roads are drawn once; each frame redraws only the marks.
+// customer aboard a green dot, and the shortest way there along the roads a green line. The
+// roads are drawn once; each frame redraws only the marks.
 
 const SIZE = 30;   // cqh: the map's side as a fraction of the picture's height
 const PAD = 0.04;  // of the side, around the city
@@ -23,17 +24,118 @@ export function fitView(points, side) {
   };
 }
 
+/** The roads as a graph: every point of the stage courses, joined along each course and from its
+ *  end to the start of its next and branch courses and at both ends to its neighbour lane (both
+ *  ways: the cab may drive against traffic). */
+export function roadGraph(courses) {
+  const F = courses.course_fields;
+  const [IDX, ROLE, NEXT, BRANCH, NEIGHBOUR, PTS] =
+    ['index', 'role', 'next', 'branch', 'neighbour', 'points'].map((f) => F.indexOf(f));
+  const stages = courses.courses.filter((c) => c[ROLE] === 'stage');
+  const pts = [], first = new Map(), last = new Map();
+  for (const c of stages) {
+    first.set(c[IDX], pts.length);
+    for (const p of c[PTS]) pts.push(p);
+    last.set(c[IDX], pts.length - 1);
+  }
+  const adj = pts.map(() => []);
+  const join = (a, b) => {
+    const w = Math.hypot(pts[a][0] - pts[b][0], pts[a][1] - pts[b][1], pts[a][2] - pts[b][2]);
+    adj[a].push(b, w); adj[b].push(a, w);
+  };
+  for (const c of stages) {
+    const end = last.get(c[IDX]);
+    for (let i = first.get(c[IDX]); i < end; i++) join(i, i + 1);
+    for (const n of [c[NEXT], c[BRANCH]]) if (first.has(n)) join(end, first.get(n));
+    // A lane change into the parallel lane at both ends (some lanes connect only through it).
+    const n = c[NEIGHBOUR];
+    if (!first.has(n)) continue;
+    for (const a of [first.get(c[IDX]), end]) {
+      let best = -1, bd = Infinity;
+      for (let i = first.get(n); i <= last.get(n); i++) {
+        const d = (pts[i][0] - pts[a][0]) ** 2 + (pts[i][1] - pts[a][1]) ** 2 + (pts[i][2] - pts[a][2]) ** 2;
+        if (d < bd) { bd = d; best = i; }
+      }
+      join(a, best);
+    }
+  }
+  return { pts, adj };
+}
+
+/** Dijkstra from point `from`: each point's distance along the roads and the next point towards `from`. */
+export function routeTree({ pts, adj }, from) {
+  const dist = new Float64Array(pts.length).fill(Infinity), prev = new Int32Array(pts.length).fill(-1);
+  dist[from] = 0;
+  const heap = [[0, from]];
+  while (heap.length) {
+    const [d, a] = heap[0], tail = heap.pop();
+    if (heap.length) { // sift the tail down from the root
+      let i = 0;
+      for (;;) {
+        let c = 2 * i + 1;
+        if (c >= heap.length) break;
+        if (c + 1 < heap.length && heap[c + 1][0] < heap[c][0]) c++;
+        if (heap[c][0] >= tail[0]) break;
+        heap[i] = heap[c]; i = c;
+      }
+      heap[i] = tail;
+    }
+    if (d > dist[a]) continue;
+    const e = adj[a];
+    for (let k = 0; k < e.length; k += 2) {
+      const b = e[k], nd = d + e[k + 1];
+      if (nd >= dist[b]) continue;
+      dist[b] = nd; prev[b] = a;
+      let i = heap.push(null) - 1; // sift up
+      while (i > 0) {
+        const p = (i - 1) >> 1;
+        if (heap[p][0] <= nd) break;
+        heap[i] = heap[p]; i = p;
+      }
+      heap[i] = [nd, b];
+    }
+  }
+  return { dist, prev };
+}
+
+/** The graph's point nearest [x, y, z]; with `dist`, only among the points it reaches. */
+export function nearestPoint(pts, [x, y, z], dist) {
+  let best = -1, bd = Infinity;
+  for (let i = 0; i < pts.length; i++) {
+    if (dist && dist[i] === Infinity) continue;
+    const p = pts[i], d = (p[0] - x) ** 2 + (p[1] - y) ** 2 + (p[2] - z) ** 2;
+    if (d < bd) { bd = d; best = i; }
+  }
+  return best;
+}
+
 export class Minimap {
   /** @param root the HUD element   @param courses courses/<city>.json */
   constructor(root, courses) {
     const at = courses.course_fields.indexOf('points'), role = courses.course_fields.indexOf('role');
     this.lines = courses.courses.filter((c) => c[role] !== 'other').map((c) => c[at]);
+    this.graph = roadGraph(courses);
+    this.tree = null; this.treeKey = '';
     this.canvas = document.createElement('canvas');
     this.canvas.id = 'hud-map';
     root.append(this.canvas);
     this.ctx = this.canvas.getContext('2d');
     this.roads = document.createElement('canvas');
     this.side = 0;
+  }
+
+  /** The shortest way along the roads from the cab to the destination, as graph points. */
+  route(pos, target) {
+    const key = target.join();
+    if (key !== this.treeKey) {
+      this.treeKey = key;
+      this.tree = routeTree(this.graph, nearestPoint(this.graph.pts, target));
+    }
+    const out = [];
+    for (let i = nearestPoint(this.graph.pts, [pos.x, pos.y, pos.z], this.tree.dist); i >= 0; i = this.tree.prev[i]) {
+      out.push(this.graph.pts[i]);
+    }
+    return out;
   }
 
   /** Draws the roads for a map `side` pixels wide. */
@@ -69,6 +171,17 @@ export class Minimap {
     const { scale, ox, oz } = this.view, g = this.ctx;
     g.clearRect(0, 0, side, side);
     g.drawImage(this.roads, 0, 0);
+    if (target) {
+      // The shortest route there along the roads, from the cab through the road points.
+      g.strokeStyle = '#30e030';
+      g.lineWidth = side / 90;
+      g.lineJoin = g.lineCap = 'round';
+      g.beginPath();
+      g.moveTo(ox + pos.x * scale, oz + pos.z * scale);
+      for (const [x, , z] of this.route(pos, target)) g.lineTo(ox + x * scale, oz + z * scale);
+      g.lineTo(ox + target[0] * scale, oz + target[2] * scale);
+      g.stroke();
+    }
     if (target) {
       g.fillStyle = '#30e030';
       g.strokeStyle = '#000';
