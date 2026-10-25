@@ -118,7 +118,7 @@ async function runMenu(box, cab, spidey = false) {
       }
       const suited = spidey && menu.screen === 'select' && menu.select().cab === SPIDEY_CAB;
       select.setSpidey(suited);
-      if (suited) view.rename.set('AXEL', 'SPIDEY'); else view.rename.delete('AXEL');
+      if (suited) view.rename.set('AXEL', { text: 'SPIDEY', box: 'BDJOE' }); else view.rename.delete('AXEL');
       view.render(menu.draws, menu.screen === 'select' ? {
         background: menu.select().background,
         scene: select.render(menu.draws, menu.view(), menu.projection(), canvas.width, canvas.height),

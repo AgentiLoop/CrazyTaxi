@@ -129,7 +129,7 @@ export class MenuView {
       for (const t of bank.textures) if (t.png) this.paths.set(t.texture_number, t.png);
     }
     this.images = new Map();     // texture number -> HTMLImageElement (loading or loaded)
-    this.rename = new Map();     // a picture's text -> the text drawn instead (the mod's SPIDEY)
+    this.rename = new Map();     // a picture's text -> { text drawn instead, picture whose ink box it fills } (the mod's SPIDEY)
     this.hires = new Map();      // texture number -> the pack's ImageBitmap (?hires=1)
     this.tinted = new Map();     // 'texture:r,g,b' -> canvas
     this.logo = new Image();
@@ -332,10 +332,14 @@ export class MenuView {
       const picture = PICTURES.get(run.map((e) => e.texture).join(','));
       if (!picture) return 0;
       const [name, style] = picture;
-      const text = this.rename.get(name) ?? name;   // the mod: AXEL's card reads SPIDEY while he is in (src/boot.js)
-      const box = this.inkBox(run, style.ink);
+      // the mod: AXEL's card reads SPIDEY while he is in (src/boot.js), in BDJOE's ink box (AXEL's is too narrow)
+      const swap = this.rename.get(name);
+      const text = swap ? swap.text : name;
+      const as = swap && [...PICTURES].find(([, [n]]) => n === swap.box)?.[0].split(',').map(Number);
+      const box = this.inkBox(as && as.length === run.length ? run.map((e, j) => ({ ...e, texture: as[j] })) : run, style.ink);
       if (!box) return 0;
-      if (d.alpha > 0) this.text(text, style, box, colour(style.fill), d.alpha);
+      // (SPIDEY is wider than BDJOE at the font's own width: squeezed onto BDJOE's box, not run off the left)
+      if (d.alpha > 0) this.text(text, swap ? { ...style, keepAspect: false } : style, box, colour(style.fill), d.alpha);
       return run.length;
     }
     return 0;
