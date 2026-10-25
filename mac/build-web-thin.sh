@@ -13,6 +13,7 @@ IDENTITY="Developer ID Application: Todd Bruss (469UCUB275)"
 swift build --package-path "$HERE" -c release --arch arm64 --arch x86_64
 rm -rf "$APP"; mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$(swift build --package-path "$HERE" -c release --arch arm64 --arch x86_64 --show-bin-path)/CrazyTaxi" "$APP/Contents/MacOS/"
+cp "$HERE/AppIcon.icns" "$APP/Contents/Resources/"
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -22,6 +23,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>CFBundleDisplayName</key><string>Crazy Taxi</string>
   <key>CFBundleExecutable</key><string>CrazyTaxi</string>
   <key>CFBundleIdentifier</key><string>games.gokart.crazytaxi.webthin</string>
+  <key>CFBundleIconFile</key><string>AppIcon</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleShortVersionString</key><string>$VERSION</string>
   <key>CFBundleVersion</key><string>$VERSION</string>

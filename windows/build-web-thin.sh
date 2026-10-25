@@ -14,6 +14,7 @@ rm -rf "$HERE/build/web-thin"; mkdir -p "$STAGE"
 crlf < "$HERE/crazytaxi-web.ps1" > "$STAGE/crazytaxi-web.ps1"
 crlf < "$HERE/README-web-thin.txt" > "$STAGE/README.txt"
 printf '%s\r\n' "$URL" > "$STAGE/url.txt"
+cp "$HERE/CrazyTaxi.ico" "$STAGE/"
 cmd() { printf '@echo off\r\npowershell -NoProfile -ExecutionPolicy Bypass -File "%%~dp0crazytaxi-web.ps1" %s\r\n%s\r\n' "$1" "$2" > "$STAGE/$3"; }
 cmd ''           'if errorlevel 1 pause' Install.cmd
 cmd '-Run'       'if errorlevel 1 pause' CrazyTaxi.cmd

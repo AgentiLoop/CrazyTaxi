@@ -10,7 +10,7 @@ STAGE="$HERE/build/web-thin/CrazyTaxi-web-thin"
 TGZ="$HERE/../release/CrazyTaxi-web-thin-$VERSION-linux.tar.gz"
 
 rm -rf "$HERE/build/web-thin"; mkdir -p "$STAGE"
-cp "$HERE/CrazyTaxi" "$HERE/install.sh" "$STAGE/"
+cp "$HERE/CrazyTaxi" "$HERE/install.sh" "$HERE/crazytaxi.png" "$STAGE/"
 cp "$HERE/README-web-thin.txt" "$STAGE/README.txt"
 echo "$URL" > "$STAGE/url.txt"
 chmod +x "$STAGE/CrazyTaxi" "$STAGE/install.sh"

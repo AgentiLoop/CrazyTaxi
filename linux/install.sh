@@ -73,6 +73,7 @@ Type=Application
 Name=Crazy Taxi Web
 Comment=Crazy Taxi in your browser (ct.gokart.games)
 Exec="$APP/CrazyTaxi"
+Icon=$APP/crazytaxi.png
 Categories=Game;
 StartupWMClass=CrazyTaxi-Web
 EOF

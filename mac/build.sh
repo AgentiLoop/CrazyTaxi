@@ -12,6 +12,7 @@ rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN" "$APP/Contents/MacOS/CrazyTaxi"
 cp Info.plist "$APP/Contents/"
+cp AppIcon.icns "$APP/Contents/Resources/"
 printf 'APPL????' > "$APP/Contents/PkgInfo"
 codesign --force --sign - "$APP" 2>/dev/null || true
 echo "built $PWD/$APP"

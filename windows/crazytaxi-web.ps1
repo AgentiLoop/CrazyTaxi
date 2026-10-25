@@ -46,6 +46,7 @@ if (-not $Run) {
     $Lnk.TargetPath = $Edge
     $Lnk.Arguments = $EdgeArgs
     $Lnk.WorkingDirectory = $Dest
+    $Lnk.IconLocation = (Join-Path $Dest 'CrazyTaxi.ico') + ',0'
     $Lnk.Description = 'Crazy Taxi (plays ct.gokart.games in Microsoft Edge)'
     $Lnk.Save()
   }
