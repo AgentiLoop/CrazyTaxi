@@ -13,6 +13,7 @@
 import * as THREE from 'three';
 import { loadGltf, makeUnlit } from './scene.js';
 import { spideySkin } from './spidey.js';
+import { spmanSkin } from './spman.js';
 
 const KEYS_PER_SECOND = 30;
 
@@ -27,8 +28,8 @@ export class SelectView {
     this.camera = new THREE.PerspectiveCamera();
     this.camera.matrixAutoUpdate = false;
     this.clips = null;                 // motion address -> { clip, frames }
-    this.figures = new Map();          // character (or 'spidey:' character) -> { group, mixer, actions } (null while loading)
-    this.spidey = false;               // the mod: the figure drawn as Spidey (src/spidey.js; the select's Axel is its own character)
+    this.figures = new Map();          // character (or 'spidey:' / 'spman:' character) -> { group, mixer, actions } (null while loading)
+    this.spidey = '';                  // the mod: the figure drawn as 'spidey' (src/spidey.js) or 'spman' (src/spman.js; the select's Axel is its own character)
     this.ready = Promise.all([
       fetch(`${assets}characters/manifest.json`).then((r) => r.json()),
       loadGltf(`${assets}characters/motions.glb`),
@@ -42,17 +43,17 @@ export class SelectView {
     });
   }
 
-  /** Spidey in (true: the figures are drawn in his suit) or out. */
-  setSpidey(on) {
-    this.spidey = on;
+  /** Spidey or SPMAN in ('spidey' / 'spman': the figures are drawn as him) or out (''). */
+  setSpidey(driver) {
+    this.spidey = driver;
   }
 
   figure(character) {
-    const spidey = this.spidey, key = spidey ? `spidey:${character}` : character;
+    const spidey = this.spidey, key = spidey ? `${spidey}:${character}` : character;
     if (!this.figures.has(key)) {
       this.figures.set(key, null);
-      loadGltf(`${this.assets}characters/characters/char_${character.toString(16).padStart(2, '0')}.glb`).then((g) => {
-        const body = spidey ? spideySkin(makeUnlit(g.scene)) : makeUnlit(g.scene);
+      loadGltf(`${this.assets}characters/characters/char_${character.toString(16).padStart(2, '0')}.glb`).then(async (g) => {
+        const body = spidey === 'spman' ? await spmanSkin(makeUnlit(g.scene), this.assets) : spidey ? spideySkin(makeUnlit(g.scene)) : makeUnlit(g.scene);
         const group = new THREE.Group();
         group.matrixAutoUpdate = false;
         group.add(body);

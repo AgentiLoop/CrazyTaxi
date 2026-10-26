@@ -25,7 +25,7 @@ import { loadSave, storeSave, PAD } from './dc-menu.js';
 import { BoxObjects } from './box-objects.js';
 import { createTAA } from './taa.js';
 import { Minimap, MINIMAP_CSS } from './minimap.js';
-import { SPIDEY_CAB } from './spidey.js';
+import { SPIDEY_CAB, nextDriver, driverParam } from './spidey.js';
 
 // The asset folder: local-assets/, or the asset release's (VITE_ASSETS=... at build or dev time).
 const ASSETS = (import.meta.env && import.meta.env.VITE_ASSETS) || 'local-assets/';
@@ -42,8 +42,8 @@ const city = CITIES[['arcade', 'original', 'crazybox'][COURSE_MODE]];
 const CAB = Math.min(3, Math.max(0, parseInt(params.get('cab'), 10) || 0));
 // The rules from the menu (?rules=): 0 arcade, 1/2/3 the 3/5/10 minute work.
 const RULES = Math.min(3, Math.max(0, parseInt(params.get('rules'), 10) || 0));
-// The mod's 5th driver (?driver=spidey, or Y): Spidey, in Axel's cab (src/spidey.js).
-let spidey = params.get('driver') === 'spidey' && CAB === SPIDEY_CAB;
+// The mod's 5th driver (?driver=spidey or spman, or Y): Spidey or SPMAN, in Axel's cab (src/spidey.js, src/spman.js).
+let spidey = CAB === SPIDEY_CAB ? driverParam(params.get('driver')) : '';
 
 const status = document.getElementById('status');
 const hudRoot = document.getElementById('hud');
@@ -183,8 +183,9 @@ async function main() {
   // Browsers play nothing before a gesture: the first key or click starts the sound
   // (a song cued during the countdown picks up where it would be).
   for (const ev of ['keydown', 'pointerdown']) addEventListener(ev, () => audio.start(), { once: true });
-  // Y: Spidey in (or back out). In Axel's cab he takes the wheel at once; from another
-  // driver's cab the run starts over in Axel's cab with Spidey driving.
+  // Y: Spidey in, then SPMAN, then back out (src/spidey.js nextDriver). In Axel's cab he
+  // takes the wheel at once; from another driver's cab the run starts over in Axel's cab
+  // with Spidey driving.
   addEventListener('keydown', (e) => {
     if (e.code !== 'KeyY' || e.repeat) return;
     const q = new URLSearchParams(location.search);
@@ -193,9 +194,9 @@ async function main() {
       location.search = q;
       return;
     }
-    spidey = !spidey;
+    spidey = nextDriver(spidey);
     people.setSpidey(spidey);
-    if (spidey) q.set('driver', 'spidey'); else q.delete('driver');
+    if (spidey) q.set('driver', spidey); else q.delete('driver');
     history.replaceState(null, '', `?${q}`);
   });
   const cabShadow = new CabShadow(scene, cabGltf, car, cabModel);   // PutMVObj: the cab's shadow volume
@@ -333,7 +334,7 @@ async function main() {
       restart();
     } else if (ending && car.choice === 'menu' && !leaving) {
       leaving = true;
-      location.search = `?menu=crazybox&game=${MINI_GAME}&cab=${CAB}${spidey ? '&driver=spidey' : ''}`;
+      location.search = `?menu=crazybox&game=${MINI_GAME}&cab=${CAB}${spidey ? `&driver=${spidey}` : ''}`;
     }
 
     // The cab as the game draws it (car.drawn: the pose putPlayerCar saw, a frame

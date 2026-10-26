@@ -5,9 +5,14 @@
 // src/boot.js); ?driver=spidey carries him from the driver select into the city.
 import * as THREE from 'three';
 import { loadGltf, makeUnlit } from './scene.js';
+import { spmanSkin } from './spman.js';
 
 export const SPIDEY_CHARACTER = 1;   // Axel's figure: the driver of cab 0 (FcvPlayBuffer's character = cab + 1)
 export const SPIDEY_CAB = 0;         // Axel's cab
+// Y goes Axel ('') -> SPIDEY ('spidey', this suit) -> SPMAN ('spman', src/spman.js) -> Axel; ?driver= carries it.
+const DRIVERS = ['', 'spidey', 'spman'];
+export const nextDriver = (driver) => DRIVERS[(DRIVERS.indexOf(driver) + 1) % DRIVERS.length];
+export const driverParam = (value) => (DRIVERS.includes(value) ? value : '');
 
 const RED = new THREE.Color(0xd01820), BLUE = new THREE.Color(0x1a3fb8);
 // Mesh name prefix -> suit colour and whether the web lines are drawn (red parts only).
@@ -77,24 +82,25 @@ export const AXEL_BW_HEAD_SHOT = 395;  // SPRGAME 155: Axel's black and white he
  * Spidey's head shots in the place of Axel's: the colour card (SPRCOMM 94: a 3 px #c5c5c5 rim
  * with round corners about a white ground) and the black and white one (SPRGAME 155: grey
  * ground), the suited model's head filling them as the others' do, upside down as the extracted
- * PNGs are. Resolves to { small: 128 x 128 Image, big: 512 x 512 canvas, bwSmall: 64 x 64
- * Image, bwBig: 512 x 512 canvas }.
+ * PNGs are. driver 'spman': SPMAN's head (src/spman.js). Resolves to { small: 128 x 128 Image,
+ * big: 512 x 512 canvas, bwSmall: 64 x 64 Image, bwBig: 512 x 512 canvas }.
  */
-export async function spideyHeadShot(assets) {
+export async function spideyHeadShot(assets, driver = 'spidey') {
   const g = await loadGltf(`${assets}characters/characters/char_${SPIDEY_CHARACTER.toString(16).padStart(2, '0')}.glb`);
-  const root = spideySkin(makeUnlit(g.scene));
+  const root = driver === 'spman' ? await spmanSkin(makeUnlit(g.scene), assets) : spideySkin(makeUnlit(g.scene));
   root.updateMatrixWorld(true);
   let head = null;
   root.traverse((o) => { if (!head && o.name.startsWith('head_') && !o.name.startsWith('head_extra')) head = o; });
-  const sphere = new THREE.Box3().setFromObject(head).getBoundingSphere(new THREE.Sphere());
+  const sphere = root.userData.spmanHead || new THREE.Box3().setFromObject(head).getBoundingSphere(new THREE.Sphere());
   // The head bone's axes: +x where the face looks, +y up the head; seen a little from one side.
   const e = head.parent.matrixWorld.elements;
   const up = new THREE.Vector3(e[4], e[5], e[6]).normalize();
   const look = new THREE.Vector3(e[0], e[1], e[2]).normalize().applyAxisAngle(up, 0.35);
   // Framed as close as the other drivers' cards: the head fills the card, the neck at its foot.
-  const target = sphere.center.clone().addScaledVector(up, 0.25 * sphere.radius);
+  // SPMAN's head sits lower in its sphere: aim lower so his head rides higher in the card.
+  const target = sphere.center.clone().addScaledVector(up, (driver === 'spman' ? 0.02 : 0.25) * sphere.radius);
   const camera = new THREE.PerspectiveCamera(30, 1, 0.1, 1000);
-  camera.position.copy(target).addScaledVector(look, 2.8 * sphere.radius);
+  camera.position.copy(target).addScaledVector(look, (driver === 'spman' ? 3.0 : 2.3) * sphere.radius);
   camera.up.copy(up);
   camera.lookAt(target);
   const scene = new THREE.Scene();

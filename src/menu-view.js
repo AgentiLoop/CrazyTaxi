@@ -346,18 +346,20 @@ export class MenuView {
     return 0;
   }
 
-  /** The mod: Spidey's head shot in place of Axel's while he is in (src/spidey.js), rendered the first time. */
-  setSpidey(on) {
-    this.spidey = on;
-    if (on && this.spideyShot === undefined) {
-      this.spideyShot = null;
-      spideyHeadShot(this.assets).then((shot) => { this.spideyShot = shot; }, (e) => console.warn('spidey head shot:', e));
+  /** The mod: Spidey's or SPMAN's head shot in place of Axel's while he is in ('spidey' / 'spman', src/spidey.js), rendered the first time. */
+  setSpidey(driver) {
+    this.spidey = driver;
+    this.shots ??= new Map();   // driver -> head shots (null while rendering)
+    if (driver && !this.shots.has(driver)) {
+      this.shots.set(driver, null);
+      spideyHeadShot(this.assets, driver).then((shot) => { this.shots.set(driver, shot); }, (e) => console.warn(`${driver} head shot:`, e));
     }
+    this.spideyShot = driver ? this.shots.get(driver) : null;
   }
 
   image(n) {
-    if (n === AXEL_HEAD_SHOT && this.spidey && this.spideyShot) return this.spideyShot.small;
-    if (n === AXEL_BW_HEAD_SHOT && this.spidey && this.spideyShot) return this.spideyShot.bwSmall;
+    if (n === AXEL_HEAD_SHOT && this.spideyShot) return this.spideyShot.small;
+    if (n === AXEL_BW_HEAD_SHOT && this.spideyShot) return this.spideyShot.bwSmall;
     let im = this.images.get(n);
     if (!im) {
       const path = this.paths.get(n);
