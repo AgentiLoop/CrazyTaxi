@@ -16,7 +16,7 @@ import { PeopleView } from './people.js';
 import { Hud, HUD_CSS } from './hud.js';
 import { CartoonDigits } from './cartoon-digits.js';
 import { TrafficView } from './traffic-view.js';
-import { CabShadow } from './cab-shadow.js';
+import { CabShadow, BY_VIEW_DROP } from './cab-shadow.js';
 import { NavArrow } from './nav-arrow.js';
 import { KyakuMarks } from './kyaku-marks.js';
 import { GameAudio } from './audio.js';
@@ -54,7 +54,7 @@ const canvas = document.getElementById('view');
 // models lay opaque panels (windows, signs) ~0.01 over their walls; a 24-bit z (near 3) loses
 // that gap past a few hundred units and they flicker, a log depth keeps it out to the far plane
 const renderer = new THREE.WebGLRenderer({ antialias: true, canvas, stencil: true, logarithmicDepthBuffer: true });
-const taa = params.get('taa') !== '0' ? createTAA(renderer) : null;   // the far edges' crawl (src/taa.js); ?taa=0 MSAA only
+const taa = params.get('taa') === '1' ? createTAA(renderer) : null;   // the far edges' crawl (src/taa.js), opt-in ?taa=1: it shimmers the riders at speed; MSAA by default
 
 const scene = new THREE.Scene();
 const SKY = 0x7fb2e5;
@@ -145,10 +145,15 @@ async function main() {
   });
   // The body (every part but the wheels) tilts on the chassis (putPlayerCar: +0xAC about
   // x, +0xB0 about z, then the model's 1.2 drop); the driver and the passenger are drawn
-  // in that body matrix, so the seats must tilt with them.
+  // in that body matrix, so the seats must tilt with them. The four cabbies' cabs are drawn
+  // by putPlayerCarByView, whose drop is 2.3 (its +0xB4 matrix, the seats' too): the GLB
+  // bakes putPlayerCar's 1.2, so the body parts go down the other 1.1.
   const body = new THREE.Group();
   body.rotation.order = 'XZY';
-  for (const o of cabModel.children.filter((c) => !c.name.startsWith('wheel_'))) body.add(o);
+  for (const o of cabModel.children.filter((c) => !c.name.startsWith('wheel_'))) {
+    if (!wheels.some((w) => w.pivot === o)) o.position.y -= BY_VIEW_DROP - 1.2;
+    body.add(o);
+  }
   cabModel.add(body);
   // The cab's +z is its front: rotate it by the heading directly.
   const cab = new THREE.Group();
@@ -362,6 +367,7 @@ async function main() {
       // The game's 640 x 480 screen is the 4:3 middle of the window (the vertical view is the game's).
       const h = Math.round(innerHeight * Math.min(devicePixelRatio, 2)), w = Math.round(h * 4 / 3);
       if (boxCanvas.width !== w || boxCanvas.height !== h) { boxCanvas.width = w; boxCanvas.height = h; }
+      boxView.setSpidey(spidey);
       boxView.render(ending ? frozen.concat(car.sprites) : car.sprites, { clear: true });
     }
 

@@ -4,6 +4,7 @@
 // the red parts, Axel's hair hidden and white eyes on the mask. Y puts him in (src/main.js,
 // src/boot.js); ?driver=spidey carries him from the driver select into the city.
 import * as THREE from 'three';
+import { loadGltf, makeUnlit } from './scene.js';
 
 export const SPIDEY_CHARACTER = 1;   // Axel's figure: the driver of cab 0 (FcvPlayBuffer's character = cab + 1)
 export const SPIDEY_CAB = 0;         // Axel's cab
@@ -68,3 +69,69 @@ export function spideySkin(root) {
   }
   return root;
 }
+
+export const AXEL_HEAD_SHOT = 94;      // SPRCOMM 94: Axel's head shot card (128 x 128)
+export const AXEL_BW_HEAD_SHOT = 395;  // SPRGAME 155: Axel's black and white head shot (64 x 64, grey ground)
+
+/**
+ * Spidey's head shots in the place of Axel's: the colour card (SPRCOMM 94: a 3 px #c5c5c5 rim
+ * with round corners about a white ground) and the black and white one (SPRGAME 155: grey
+ * ground), the suited model's head filling them as the others' do, upside down as the extracted
+ * PNGs are. Resolves to { small: 128 x 128 Image, big: 512 x 512 canvas, bwSmall: 64 x 64
+ * Image, bwBig: 512 x 512 canvas }.
+ */
+export async function spideyHeadShot(assets) {
+  const g = await loadGltf(`${assets}characters/characters/char_${SPIDEY_CHARACTER.toString(16).padStart(2, '0')}.glb`);
+  const root = spideySkin(makeUnlit(g.scene));
+  root.updateMatrixWorld(true);
+  let head = null;
+  root.traverse((o) => { if (!head && o.name.startsWith('head_') && !o.name.startsWith('head_extra')) head = o; });
+  const sphere = new THREE.Box3().setFromObject(head).getBoundingSphere(new THREE.Sphere());
+  // The head bone's axes: +x where the face looks, +y up the head; seen a little from one side.
+  const e = head.parent.matrixWorld.elements;
+  const up = new THREE.Vector3(e[4], e[5], e[6]).normalize();
+  const look = new THREE.Vector3(e[0], e[1], e[2]).normalize().applyAxisAngle(up, 0.35);
+  // Framed as close as the other drivers' cards: the head fills the card, the neck at its foot.
+  const target = sphere.center.clone().addScaledVector(up, 0.25 * sphere.radius);
+  const camera = new THREE.PerspectiveCamera(30, 1, 0.1, 1000);
+  camera.position.copy(target).addScaledVector(look, 2.8 * sphere.radius);
+  camera.up.copy(up);
+  camera.lookAt(target);
+  const scene = new THREE.Scene();
+  scene.add(root);
+  const S = 512;
+  const renderer = new THREE.WebGLRenderer({ alpha: true, antialias: true, preserveDrawingBuffer: true });
+  renderer.setSize(S, S, false);
+  renderer.setClearColor(0x000000, 0);
+  renderer.render(scene, camera);
+  const card = (ground, rim, size, radius, bw) => {
+    const big = document.createElement('canvas');
+    big.width = big.height = S;
+    const c = big.getContext('2d');
+    const k = S / size;
+    c.translate(0, S); c.scale(1, -1);   // upside down
+    const shape = (inset, r) => { c.beginPath(); c.roundRect(inset * k, inset * k, S - 2 * inset * k, S - 2 * inset * k, r * k); };
+    if (rim) { shape(0, radius); c.fillStyle = rim; c.fill(); }
+    shape(rim ? 3 : 0, rim ? radius - 3 : radius); c.fillStyle = ground; c.fill(); c.clip();
+    c.drawImage(renderer.domElement, 0, 0, S, S);
+    if (bw) {
+      const px = c.getImageData(0, 0, S, S), d = px.data;
+      for (let i = 0; i < d.length; i += 4) d[i] = d[i + 1] = d[i + 2] = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
+      c.putImageData(px, 0, 0);
+    }
+    const small = document.createElement('canvas');
+    small.width = small.height = size;
+    const s = small.getContext('2d');
+    s.imageSmoothingQuality = 'high';
+    s.drawImage(big, 0, 0, size, size);
+    const im = new Image();
+    im.src = small.toDataURL();
+    return im.decode().then(() => ({ small: im, big }));
+  };
+  const colour = await card('#fff', '#c5c5c5', 128, 14, false);
+  const bw = await card('#bdbebd', null, 64, 4, true);
+  renderer.dispose();
+  renderer.forceContextLoss();
+  return { ...colour, bwSmall: bw.small, bwBig: bw.big };
+}
+

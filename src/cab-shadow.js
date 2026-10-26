@@ -29,7 +29,9 @@ import { shadowDarken } from './traffic-view.js';
 const SET_LIGHT = 0x0C02FE80, LIGHT = 0x0C26BEE0;
 const COURSE_MODE = 0x0C1EBF2C, MINI_GAME_NO = 0x0C1EBF34;
 const LENGTH = 100;
-const BODY_DROP = 1.2;
+// The four cabbies' cabs are drawn by putPlayerCarByView (USA 0x0C0200E4): its drop is 2.3
+// (putPlayerCar's, for cabs 4+, is 1.2), and PutMVObj runs in that matrix.
+export const BY_VIEW_DROP = 2.3;
 const ORDER = 20;   // after the traffic shadows (10, 11), which leave the stencil cleared
 const UNAFFECTED = 0x80;
 
@@ -135,7 +137,7 @@ export class CabShadow {
       .multiply(t.makeRotationX(d.pitch)).multiply(t.makeRotationZ(d.roll))
       .multiply(t.makeRotationX(d.bodyPitch)).multiply(t.makeRotationZ(d.bodyRoll));
     m.makeTranslation(d.pos.x, d.pos.y, d.pos.z).multiply(r)
-      .multiply(t.makeTranslation(0, -BODY_DROP, 0));
+      .multiply(t.makeTranslation(0, -BY_VIEW_DROP, 0));
     this.group.matrixWorldNeedsUpdate = true;
     // The light in the body's frame: the rotation's transpose (0x0C077990) times the light.
     const l = this.local.copy(this.light).applyMatrix4(r.transpose());

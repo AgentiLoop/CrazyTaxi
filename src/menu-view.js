@@ -6,6 +6,7 @@
 // is drawn from the hi-res texture pack's image once it has loaded (src/scene.js hiresImage);
 // its size and layout stay the game's.
 import { HIRES, hiresImage, releaseImage } from './scene.js';
+import { AXEL_HEAD_SHOT, AXEL_BW_HEAD_SHOT, spideyHeadShot } from './spidey.js';
 const SCREEN_W = 640, SCREEN_H = 480;
 // The driver figure's 1/z (SelectView): ~1/33, between the select's art and its text.
 const FIGURE_DEPTH = 1 / 33;
@@ -345,7 +346,18 @@ export class MenuView {
     return 0;
   }
 
+  /** The mod: Spidey's head shot in place of Axel's while he is in (src/spidey.js), rendered the first time. */
+  setSpidey(on) {
+    this.spidey = on;
+    if (on && this.spideyShot === undefined) {
+      this.spideyShot = null;
+      spideyHeadShot(this.assets).then((shot) => { this.spideyShot = shot; }, (e) => console.warn('spidey head shot:', e));
+    }
+  }
+
   image(n) {
+    if (n === AXEL_HEAD_SHOT && this.spidey && this.spideyShot) return this.spideyShot.small;
+    if (n === AXEL_BW_HEAD_SHOT && this.spidey && this.spideyShot) return this.spideyShot.bwSmall;
     let im = this.images.get(n);
     if (!im) {
       const path = this.paths.get(n);
@@ -360,6 +372,8 @@ export class MenuView {
 
   /** The pack's image for a loaded sprite while the pack is on (H), else null: asked for once. */
   hiresOf(n, im) {
+    if (this.spideyShot && im === this.spideyShot.small) return this.spideyShot.big;
+    if (this.spideyShot && im === this.spideyShot.bwSmall) return this.spideyShot.bwBig;
     if (!HIRES) return null;
     if (!this.hires.has(n)) {
       this.hires.set(n, null);

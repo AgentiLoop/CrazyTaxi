@@ -213,6 +213,23 @@ export class PeopleView {
     }
     inst.mixer.update(0);
     inst.fcv = false;
+    inst.raw = null;
+  }
+
+  /**
+   * The pose buffer averaged with the last game frame's. drvJolt rocks the driver by the
+   * cab's acceleration (the second difference of its position); scraping a wall or riding
+   * a bump flips it every frame, a 60 Hz shake of the body and head. The two-frame mean
+   * cancels that flip and keeps the slower sway and the head's turn.
+   */
+  steady(inst, buffer) {
+    if (buffer === inst.raw) return inst.steadied;   // the same game frame drawn again
+    const prev = inst.raw;
+    inst.raw = buffer;
+    inst.steadied = prev ? buffer.map((v, i) => v.map((x, j) => (i < 5
+      ? (x + prev[i][j]) / 2
+      : x + ((((prev[i][j] - x) % TURN) + TURN + TURN / 2) % TURN - TURN / 2) / 2))) : buffer;
+    return inst.steadied;
   }
 
   poseFcv(inst, buffer) {
@@ -220,7 +237,7 @@ export class PeopleView {
       inst.mixer.stopAllAction();
       inst.fcv = true;
     }
-    const pose = fcvPose(buffer, this.bind, this.lengths);
+    const pose = fcvPose(this.steady(inst, buffer), this.bind, this.lengths);
     const m4 = new THREE.Matrix4();
     for (const [bone, node] of inst.bones) {
       const r = pose.rotations[bone];
@@ -239,6 +256,7 @@ export class PeopleView {
         const n = count.get(p.chara) || 0;
         count.set(p.chara, n + 1);
         const inst = this.instance(p.chara, n);
+        if (!inst.group.visible) inst.raw = null;   // not drawn last frame: nothing to average with
         inst.used = true;
         inst.group.matrix.fromArray(p.matrix);
         inst.group.matrixWorldNeedsUpdate = true;
