@@ -41,11 +41,14 @@ const only = args.includes('--only') ? new Set(args[args.indexOf('--only') + 1].
 const stage = (name) => !only || only.has(name);
 
 // The directories the game fetches from (src/*.js) and the disc files it reads itself.
-const DIRS = ['audio', 'characters', 'collision', 'courses', 'customers', 'fcv_motions', 'fonts',
+const DIRS = ['audio', 'characters', 'courses', 'customers', 'fcv_motions', 'fonts',
   'landmarks', 'models', 'props', 'sprites', 'textures', 'vehicles'];
 const DISC = ['1ST_READ.BIN', 'MOTDC.BIN', 'POLDC0.BIN', 'COLDC1.BIN', 'COLDC2.BIN', 'COLDC3.BIN',
   'SPLDC1.BIN', 'SPLDC2.BIN', 'SPLDC3.BIN', 'OBJDC1.BIN', 'OBJDC2.BIN', 'OBJDC3.BIN'];
 const SKIP = (name) => name === '.DS_Store' || name.endsWith('.html');
+// What those directories hold that src/ never fetches (the extractors' glTF / JSON views,
+// the PSX-style fonts, the cartoon digits' WebPs, the manifests no module reads).
+const UNUSED = /\/(fcv_motions\/fcv_motions\.glb|courses\/(SPLDC\d\.glb|crazy_box\.json|manifest\.json)|fonts\/(font_\d\/|manifest\.json|cartoon_digits\/[^/]+\.png)|(landmarks|models|props|textures)\/manifest\.json)/;
 const STREAMS = { 'SONG01.AFS': { opus: '112k', aac: '128k' }, 'VOICE01.AFS': { opus: '40k', aac: '48k' } };
 
 async function pool(items, fn, n = cpus().length) {
@@ -67,7 +70,7 @@ function copyTree(from, to, keep = () => true) {
 function copyStage() {
   for (const d of DIRS) {
     // the streams' WAVs are replaced by the audio stage
-    copyTree(join(SRC, d), join(LOW, d), (p) => !/\/audio\/(SONG01|VOICE01)\//.test(p));
+    copyTree(join(SRC, d), join(LOW, d), (p) => !/\/audio\/(SONG01|VOICE01)\//.test(p) && !UNUSED.test(p));
   }
   cpSync(join(SRC, 'crazy-taxi.svg'), join(LOW, 'crazy-taxi.svg'));   // the title's logo
   mkdirSync(join(LOW, 'disc'), { recursive: true });
